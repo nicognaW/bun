@@ -282,15 +282,6 @@ pub(crate) fn scan_imports_and_exports(
                                 {
                                     col!(dyn_ref_aliases)[other_file].merge_all()
                                 }
-                                // `require()` reads these two names off the namespace object.
-                                Some(dynamic_use)
-                                    if record.kind == ImportKind::Require
-                                        && other_flags
-                                            .contains(AstFlags::COMMONJS_LIFTED_TO_ESM)
-                                        && require_reads_exports_object(Some(dynamic_use)) =>
-                                {
-                                    col!(dyn_ref_aliases)[other_file].merge_all()
-                                }
                                 Some(dynamic_use) => {
                                     col!(dyn_ref_aliases)[other_file]
                                         .merge_partial(dynamic_use.aliases.slice());
@@ -380,21 +371,22 @@ pub(crate) fn scan_imports_and_exports(
                             }
                         } else if require_reads_exports_object(
                             col_ref!(dynamic_import_aliases)[id].get(&(import_record_index as u32)),
-                        ) && col_ref!(entry_point_kinds)[other_file]
-                            != EntryPoint::Kind::UserSpecified
-                            && LinkerContext::require_returns_namespace(
-                                col_ref!(ast_flags_list),
-                                col_ref!(exports_kind),
-                                col_ref!(export_star_import_records),
-                                col_ref!(import_records_list),
-                                other_file as u32,
-                            )
-                        {
+                        ) && LinkerContext::require_returns_namespace(
+                            col_ref!(ast_flags_list),
+                            col_ref!(exports_kind),
+                            col_ref!(export_star_import_records),
+                            col_ref!(import_records_list),
+                            other_file as u32,
+                        ) {
                             // The chunk of a lifted CommonJS file exports its namespace
                             // object as `default`, and the split call reads it there. A
-                            // file with its own `__esModule` and `default` keeps both.
+                            // `default` that `import()` must see stays, as below.
                             let exports = &col_ref!(named_exports)[other_file];
-                            if !(exports.contains(b"default") && exports.contains(b"__esModule")) {
+                            if !exports.contains(b"default")
+                                || (col_ref!(entry_point_kinds)[other_file]
+                                    != EntryPoint::Kind::UserSpecified
+                                    && !exports.contains(b"__esModule"))
+                            {
                                 col!(flags)[other_file].needs_synthetic_default_export = true;
                             }
                         }
@@ -1182,7 +1174,9 @@ pub(crate) fn scan_imports_and_exports(
                             // file the linker wrapped again): the chunk exports only
                             // `default: module.exports`, so the printed call reads
                             // `.default` to return `module.exports`, the same value
-                            // an unsplit `require()` returns.
+                            // an unsplit `require()` returns. A lifted file that
+                            // stays an ES module exports the object that stands in
+                            // for `module.exports` as `default` too.
                             if kind == ImportKind::Require
                                 && is_external_dyn
                                 && rec_source_index.is_valid()
@@ -1494,7 +1488,6 @@ pub(crate) fn scan_imports_and_exports(
     Ok(())
 }
 
-#[inline]
 /// Does a `require()` observe the object it returns: no tracked use, or a
 /// read of `default` or `__esModule`? Any other tracked name is the same
 /// binding on a chunk's namespace as on the file's exports object.
@@ -1510,6 +1503,7 @@ fn require_reads_exports_object(
     })
 }
 
+#[inline]
 fn should_call_runtime_require(format: options::Format) -> bool {
     format != Format::Cjs
 }

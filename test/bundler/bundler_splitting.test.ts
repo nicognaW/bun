@@ -4011,6 +4011,64 @@ describe("bundler", () => {
     ],
   });
 
+  // An `import()` of the file gives the chunk its `default`. A tracked read
+  // still reads the chunk's own export.
+  itBundled("splitting/SplitRequireOfLiftedCommonJSTrackedReadWithImport", {
+    matchesBunRun: true,
+    files: {
+      ...liftedCommonJSFiles,
+      "/main.ts": /* ts */ `
+        try {
+          console.log(require("react").inc());
+        } catch {}
+        const ns = await import("react");
+        console.log(ns.default.inc());
+      `,
+    },
+    entryPoints: ["/main.ts"],
+    splitting: true,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    onAfterBundle(api) {
+      const chunk = chunkContaining(api, "react evaluated");
+      api.expectFile("/out/main.js").toContain(`import.meta.require("./${chunk}").inc()`);
+      api.expectFile("/out/" + chunk).toContain("export default exports_react;");
+    },
+    run: { file: "/out/main.js", stdout: "react evaluated\n1\n2" },
+  });
+
+  // A lifted file that is an entry point itself: its output file is the
+  // chunk, and it exports the namespace object as `default` too.
+  itBundled("splitting/SplitRequireOfLiftedCommonJSEntryPoint", {
+    matchesBunRun: true,
+    files: {
+      "/main.ts": /* ts */ `
+        let m;
+        try {
+          m = require("scheduler");
+        } catch {}
+        m.count = 41;
+        console.log(m.__esModule, m.inc());
+      `,
+      "/node_modules/scheduler/package.json": /* json */ `
+        { "name": "scheduler", "version": "19.0.0", "main": "index.js" }
+      `,
+      "/node_modules/scheduler/index.js": liftedCommonJSFiles["/node_modules/react/index.js"],
+    },
+    entryPoints: ["/main.ts", "/node_modules/scheduler/index.js"],
+    entryNaming: "[name].[ext]",
+    splitting: true,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    onAfterBundle(api) {
+      api.expectFile("/out/main.js").toContain(`m = import.meta.require("./index.js").default;`);
+      api.expectFile("/out/index.js").toContain("export default exports_scheduler;");
+    },
+    run: { file: "/out/main.js", stdout: "react evaluated\nundefined 42" },
+  });
+
   // `bun run` loads a file with no exports as CommonJS when it calls
   // require(), which the parser turned into an import.
   itBundled("splitting/SplitRequireOfLiftedCommonJSWithNoExports", {
@@ -4044,7 +4102,8 @@ describe("bundler", () => {
   });
 
   // Control: a lifted file that sets `__esModule` and `default` itself has
-  // both on its chunk's namespace. The call returns that namespace.
+  // both on its chunk's namespace. The call returns that namespace, and the
+  // chunk's `default` stays the file's own for an `import()`.
   itBundled("splitting/SplitRequireOfLiftedCommonJSWithEsModuleAndDefault", {
     matchesBunRun: true,
     files: {
@@ -4054,6 +4113,8 @@ describe("bundler", () => {
           m = require("react");
         } catch {}
         console.log(m.__esModule, Object.keys(m).join(), m.default.tag, m.named);
+        const ns = await import("react");
+        console.log(ns.default.tag, ns.named);
       `,
       "/node_modules/react/package.json": liftedCommonJSFiles["/node_modules/react/package.json"],
       "/node_modules/react/index.js": /* js */ `
@@ -4072,7 +4133,7 @@ describe("bundler", () => {
       const chunk = chunkContaining(api, "react evaluated");
       api.expectFile("/out/main.js").toContain(`m = import.meta.require("./${chunk}");`);
     },
-    run: { file: "/out/main.js", stdout: "react evaluated\ntrue __esModule,default,named default 1" },
+    run: { file: "/out/main.js", stdout: "react evaluated\ntrue __esModule,default,named default 1\ndefault 1" },
   });
 
   // Control: an ES module inside an unwrapped package is an ES module to
