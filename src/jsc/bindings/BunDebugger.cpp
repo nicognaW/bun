@@ -93,9 +93,8 @@ enum class ConnectionStatus : int32_t {
 class BunInspectorConnection : public ThreadSafeRefCounted<BunInspectorConnection>, public Inspector::FrontendChannel {
 
 public:
-    BunInspectorConnection(ScriptExecutionContext& scriptExecutionContext, JSC::JSGlobalObject* globalObject, bool shouldRefEventLoop)
+    BunInspectorConnection(ScriptExecutionContext& scriptExecutionContext, bool shouldRefEventLoop)
         : Inspector::FrontendChannel()
-        , globalObject(globalObject)
         , scriptExecutionContextIdentifier(scriptExecutionContext.identifier())
         , unrefOnDisconnect(shouldRefEventLoop)
     {
@@ -105,9 +104,9 @@ public:
     {
     }
 
-    static Ref<BunInspectorConnection> create(ScriptExecutionContext& scriptExecutionContext, JSC::JSGlobalObject* globalObject, bool shouldRefEventLoop)
+    static Ref<BunInspectorConnection> create(ScriptExecutionContext& scriptExecutionContext, bool shouldRefEventLoop)
     {
-        return adoptRef(*new BunInspectorConnection(scriptExecutionContext, globalObject, shouldRefEventLoop));
+        return adoptRef(*new BunInspectorConnection(scriptExecutionContext, shouldRefEventLoop));
     }
 
     ConnectionType connectionType() const override
@@ -119,7 +118,7 @@ public:
     {
         this->status = ConnectionStatus::Connected;
         auto* globalObject = context.jsGlobalObject();
-        // `bun test --isolate` can replace the global after create(). disconnect() must reach this one's controller.
+        // Not the global at creation: `bun test --isolate` can replace that one before this task runs.
         this->globalObject = globalObject;
         if (this->unrefOnDisconnect) {
             Bun__VmHandle__refKeepAlive(WebCore::clientData(JSC::getVM(globalObject))->vmHandle, BunLoopKind::Regular, 1);
@@ -466,7 +465,7 @@ public:
     WTF::Lock jsThreadMessagesLock = WTF::Lock();
     std::atomic<uint32_t> jsThreadMessageScheduledCount { 0 };
 
-    JSC::JSGlobalObject* globalObject;
+    JSC::JSGlobalObject* globalObject { nullptr };
     ScriptExecutionContextIdentifier scriptExecutionContextIdentifier;
     JSC::Strong<JSC::Unknown> jsBunDebuggerOnMessageFunction {};
 
@@ -655,9 +654,7 @@ JSC_DEFINE_HOST_FUNCTION(jsFunctionCreateConnection, (JSGlobalObject * globalObj
     if (!targetContext || !onMessageFn)
         return JSValue::encode(jsUndefined());
 
-    auto connection = BunInspectorConnection::create(
-        *targetContext,
-        targetContext->jsGlobalObject(), shouldRef);
+    auto connection = BunInspectorConnection::create(*targetContext, shouldRef);
 
     {
         Locker<Lock> locker(inspectorConnectionsLock);
