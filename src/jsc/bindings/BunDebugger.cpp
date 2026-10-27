@@ -222,6 +222,8 @@ public:
         });
     }
 
+    // Only for a connection that is attached. The controller that it is attached to keeps `globalObject` alive
+    // until its last frontend detaches (JSGlobalObjectInspectorController::m_strongGlobalObject).
     JSC::JSGlobalObjectDebuggable& inspector()
     {
         return globalObject->inspectorDebuggable();
