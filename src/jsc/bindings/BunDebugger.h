@@ -12,4 +12,8 @@ JSC_DECLARE_HOST_FUNCTION(jsFunction_waitForNodeInspectorConnection);
 JSC_DECLARE_HOST_FUNCTION(jsFunction_postNodeInspectorControl);
 JSC_DECLARE_HOST_FUNCTION(jsFunction_closeNodeInspector);
 
+// Called before `globalObject` is destroyed, at exit or when the GC collects a global that
+// `bun test --isolate` replaced.
+void leakInspectorControllerThatHadFrontend(JSC::JSGlobalObject&);
+
 } // namespace Bun
