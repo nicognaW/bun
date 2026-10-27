@@ -4135,6 +4135,43 @@ describe("bundler", () => {
     run: { file: "/out/main.js", stdout: "undefined 0 default,module.exports shared other shared" },
   });
 
+  // Control: a file that the linker scans later can put the lifted file back
+  // into `__commonJS`. Its chunk then exports `module.exports` as `default`.
+  itBundled("splitting/SplitRequireOfLiftedCommonJSThatIsWrappedAgainLater", {
+    matchesBunRun: true,
+    files: {
+      ...liftedCommonJSFiles,
+      "/main.ts": /* ts */ `
+        import React from "react";
+        import { viaRequire } from "./via-require";
+        globalThis.keep = [React];
+        const m = viaRequire();
+        console.log(m.__esModule, m === React, typeof m.inc, Object.keys(m).join());
+      `,
+      "/via-require.ts": /* ts */ `
+        export function viaRequire() {
+          let m;
+          try {
+            m = require("react");
+          } catch {}
+          return m;
+        }
+      `,
+    },
+    entryPoints: ["/main.ts"],
+    splitting: true,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    onAfterBundle(api) {
+      const chunk = chunkContaining(api, "export default require_react()");
+      expect(
+        jsFilesIn(api).some(file => api.readFile("/out/" + file).includes(`import.meta.require("./${chunk}").default`)),
+      ).toBe(true);
+    },
+    run: { file: "/out/main.js", stdout: "react evaluated\nundefined true function count,inc" },
+  });
+
   // The file can have an export with that name itself. It stays a property
   // of the exports object.
   itBundled("splitting/SplitRequireOfLiftedCommonJSWithModuleExportsName", {
