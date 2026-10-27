@@ -4205,8 +4205,37 @@ describe("bundler", () => {
   });
 
   // Control: a lifted `module.exports = require()` of an ES module returns
-  // what require() of that module returns. An `import()` gives the chunk a
-  // `default`, which is not that value.
+  // what require() of that module returns, and its chunk gets no `default`.
+  itBundled("splitting/SplitRequireOfLiftedReExportOfESModule", {
+    matchesBunRun: true,
+    files: {
+      "/main.ts": /* ts */ `
+        let m;
+        try {
+          m = require("react-is");
+        } catch {}
+        console.log(m.__esModule, Object.keys(m).join());
+      `,
+      "/node_modules/react-is/package.json": /* json */ `
+        { "name": "react-is", "version": "19.0.0", "main": "index.js" }
+      `,
+      "/node_modules/react-is/index.js": /* js */ `
+        globalThis.sideEffect = true;
+        module.exports = require("./impl.mjs");
+      `,
+      "/node_modules/react-is/impl.mjs": /* js */ `
+        export const isElement = () => true;
+      `,
+    },
+    entryPoints: ["/main.ts"],
+    splitting: true,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    run: { file: "/out/main.js", stdout: "true isElement" },
+  });
+
+  // With an `import()` the chunk has a `default`, which is not that value.
   itBundled("splitting/SplitRequireOfLiftedReExportOfESModuleWithImport", {
     matchesBunRun: true,
     files: {

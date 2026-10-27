@@ -369,14 +369,14 @@ pub(crate) fn scan_imports_and_exports(
                                 col!(flags)[other_file].wrap = WrapKind::Cjs;
                                 col!(exports_kind)[other_file] = ExportsKind::Cjs;
                             }
-                        } else if require_reads_exports_object(
-                            col_ref!(dynamic_import_aliases)[id].get(&(import_record_index as u32)),
-                        ) && LinkerContext::require_returns_namespace(
+                        } else if LinkerContext::require_returns_namespace(
                             col_ref!(ast_flags_list),
                             col_ref!(exports_kind),
                             col_ref!(export_star_import_records),
                             col_ref!(import_records_list),
                             other_file as u32,
+                        ) && require_reads_exports_object(
+                            col_ref!(dynamic_import_aliases)[id].get(&(import_record_index as u32)),
                         ) {
                             // The chunk of a lifted CommonJS file exports its namespace
                             // object as `default`, and the split call reads it there. A
