@@ -3697,8 +3697,8 @@ describe("bundler", () => {
   // A CommonJS file of an unwrapped package that was lifted to an ES module
   // is still CommonJS to require(): the call returns the file's exports
   // object, with no `__esModule` that the file did not set. The file stays a
-  // chunk. The chunk exports that object as `default` and the call reads it
-  // there, because `import.meta.require` returns the chunk's module namespace.
+  // chunk. The chunk exports that object as "module.exports", the export
+  // that `import.meta.require` returns in place of the module namespace.
   //
   // `matchesBunRun` also runs the entry point of a case with `bun run`, which
   // must print the stdout that the case expects of the bundle.
@@ -3730,8 +3730,8 @@ describe("bundler", () => {
     format: "esm",
     onAfterBundle(api) {
       const chunk = chunkContaining(api, "side effect");
-      api.expectFile("/out/main.js").toContain(`m = import.meta.require("./${chunk}").default;`);
-      api.expectFile("/out/" + chunk).toContain("export default exports_react_dom;");
+      api.expectFile("/out/main.js").toContain(`m = import.meta.require("./${chunk}");`);
+      api.expectFile("/out/" + chunk).toContain(`exports_react_dom as "module.exports"`);
     },
     run: { file: "/out/main.js", stdout: "side effect\nundefined 19.0.0 rendered" },
   });
@@ -3768,7 +3768,7 @@ describe("bundler", () => {
     format: "esm",
     onAfterBundle(api) {
       const chunk = chunkContaining(api, "side effect");
-      api.expectFile("/out/main.js").toContain(`m = import.meta.require("./${chunk}").default;`);
+      api.expectFile("/out/" + chunk).toContain(`exports_react_dom as "module.exports"`);
     },
     run: { file: "/out/main.js", stdout: "side effect\nundefined 19.0.0 rendered" },
   });
@@ -3802,7 +3802,7 @@ describe("bundler", () => {
     outdir: "/out",
     format: "esm",
     onAfterBundle(api) {
-      api.expectFile("/out/main.js").toMatch(/m = import\.meta\.require\("\.\/[^"]+"\)\.default;/);
+      api.expectFile("/out/main.js").toMatch(/m = import\.meta\.require\("\.\/[^"]+"\);/);
     },
     run: { file: "/out/main.js", stdout: "undefined 0 2" },
   });
@@ -3830,7 +3830,7 @@ describe("bundler", () => {
     `,
   };
   for (const [name, options, call] of [
-    ["Split", { target: "bun" }, /m = import\.meta\.require\("\.\/[^"]+"\)\.default;/],
+    ["Split", { target: "bun" }, /m = import\.meta\.require\("\.\/[^"]+"\);/],
     ["SplitRequireOff", { target: "bun", splitRequire: false }, /m = \(init_react\(\), exports_react\);/],
     ["TargetNode", { target: "node" }, /m = \(init_react\(\), exports_react\);/],
   ] as const) {
@@ -3872,7 +3872,7 @@ describe("bundler", () => {
     format: "esm",
     onAfterBundle(api) {
       const chunk = chunkContaining(api, "react evaluated");
-      api.expectFile("/out/main.js").toContain(`return import.meta.require("./${chunk}").default;`);
+      api.expectFile("/out/main.js").toContain(`return import.meta.require("./${chunk}");`);
     },
     run: [
       { file: "/out/main.js", stdout: "main\nreact evaluated\n1" },
@@ -3905,8 +3905,8 @@ describe("bundler", () => {
     run: { file: "/out/main.js", stdout: "react evaluated\nundefined 42 true" },
   });
 
-  // A read of a name the parser tracks needs no exports object: the call
-  // reads the chunk's own export, as for an ES module.
+  // A read of a name that the parser tracks needs no exports object: the
+  // chunk is the chunk of main.
   itBundled("splitting/SplitRequireOfLiftedCommonJSTrackedRead", {
     matchesBunRun: true,
     files: {
@@ -3925,7 +3925,7 @@ describe("bundler", () => {
     onAfterBundle(api) {
       const chunk = chunkContaining(api, "react evaluated");
       api.expectFile("/out/main.js").toContain(`import.meta.require("./${chunk}").inc()`);
-      api.expectFile("/out/" + chunk).not.toContain("export default");
+      api.expectFile("/out/" + chunk).not.toContain("module.exports");
     },
     run: { file: "/out/main.js", stdout: "react evaluated\n1" },
   });
@@ -3951,7 +3951,7 @@ describe("bundler", () => {
     format: "esm",
     onAfterBundle(api) {
       const chunk = chunkContaining(api, "react evaluated");
-      api.expectFile("/out/main.js").not.toContain(`import.meta.require("./${chunk}");`);
+      api.expectFile("/out/" + chunk).toContain(`exports_react as "module.exports"`);
     },
     run: { file: "/out/main.js", stdout: "react evaluated\nundefined 1\nundefined 2" },
   });
@@ -4011,8 +4011,8 @@ describe("bundler", () => {
     ],
   });
 
-  // An `import()` of the file gives the chunk its `default`. A tracked read
-  // still reads the chunk's own export.
+  // An `import()` of the file gives the chunk a `default`. A tracked read
+  // still needs no exports object.
   itBundled("splitting/SplitRequireOfLiftedCommonJSTrackedReadWithImport", {
     matchesBunRun: true,
     files: {
@@ -4034,12 +4034,97 @@ describe("bundler", () => {
       const chunk = chunkContaining(api, "react evaluated");
       api.expectFile("/out/main.js").toContain(`import.meta.require("./${chunk}").inc()`);
       api.expectFile("/out/" + chunk).toContain("export default exports_react;");
+      api.expectFile("/out/" + chunk).not.toContain("module.exports");
     },
     run: { file: "/out/main.js", stdout: "react evaluated\n1\n2" },
   });
 
+  // A call that holds its result and a tracked read of the same file get one
+  // object.
+  itBundled("splitting/SplitRequireOfLiftedCommonJSHeldAndTrackedAreOneObject", {
+    matchesBunRun: true,
+    files: {
+      "/main.ts": /* ts */ `
+        let m, viaTracked;
+        try {
+          m = require("react");
+        } catch {}
+        try {
+          viaTracked = require("react").self();
+        } catch {}
+        console.log(m.__esModule, viaTracked === m, m.self() === m);
+      `,
+      "/node_modules/react/package.json": liftedCommonJSFiles["/node_modules/react/package.json"],
+      "/node_modules/react/index.js": /* js */ `
+        exports.self = function () { return this; };
+      `,
+    },
+    entryPoints: ["/main.ts"],
+    splitting: true,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    run: { file: "/out/main.js", stdout: "undefined true true" },
+  });
+
+  // The file can have an export with that name itself. It stays a property
+  // of the exports object.
+  itBundled("splitting/SplitRequireOfLiftedCommonJSWithModuleExportsName", {
+    matchesBunRun: true,
+    files: {
+      "/main.ts": /* ts */ `
+        let m;
+        try {
+          m = require("react");
+        } catch {}
+        console.log(m.__esModule, m["module.exports"], m.named);
+      `,
+      "/node_modules/react/package.json": liftedCommonJSFiles["/node_modules/react/package.json"],
+      "/node_modules/react/index.js": /* js */ `
+        exports["module.exports"] = 5;
+        exports.named = 1;
+      `,
+    },
+    entryPoints: ["/main.ts"],
+    splitting: true,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    run: { file: "/out/main.js", stdout: "undefined 5 1" },
+  });
+
+  // Control: the chunk loads at the call, so a failure to load it is caught
+  // there.
+  itBundled("splitting/SplitRequireOfLiftedCommonJSThatFailsToLoad", {
+    matchesBunRun: true,
+    files: {
+      "/main.ts": /* ts */ `
+        console.log("ready");
+        let m;
+        try {
+          m = require("react");
+        } catch {
+          console.log("caught");
+        }
+        console.log(typeof m);
+      `,
+      "/node_modules/react/package.json": liftedCommonJSFiles["/node_modules/react/package.json"],
+      "/node_modules/react/index.js": /* js */ `
+        const missing = require("missing-external");
+        exports.value = missing.value;
+      `,
+    },
+    entryPoints: ["/main.ts"],
+    splitting: true,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    external: ["missing-external"],
+    run: { file: "/out/main.js", stdout: "ready\ncaught\nundefined" },
+  });
+
   // A lifted file that is an entry point itself: its output file is the
-  // chunk, and it exports the namespace object as `default` too.
+  // chunk, and it exports the exports object too.
   itBundled("splitting/SplitRequireOfLiftedCommonJSEntryPoint", {
     matchesBunRun: true,
     files: {
@@ -4063,14 +4148,14 @@ describe("bundler", () => {
     outdir: "/out",
     format: "esm",
     onAfterBundle(api) {
-      api.expectFile("/out/main.js").toContain(`m = import.meta.require("./index.js").default;`);
-      api.expectFile("/out/index.js").toContain("export default exports_scheduler;");
+      api.expectFile("/out/main.js").toContain(`m = import.meta.require("./index.js");`);
+      api.expectFile("/out/index.js").toContain(`exports_scheduler as "module.exports"`);
     },
     run: { file: "/out/main.js", stdout: "react evaluated\nundefined 42" },
   });
 
-  // Control: an entry point with a `default` export of its own keeps it for
-  // its importers, and the call returns the module namespace of its file.
+  // An entry point with a `default` export of its own keeps it for its
+  // importers.
   itBundled("splitting/SplitRequireOfLiftedCommonJSEntryPointWithDefault", {
     matchesBunRun: true,
     files: {
@@ -4079,7 +4164,7 @@ describe("bundler", () => {
         try {
           m = require("scheduler");
         } catch {}
-        console.log(m.default.tag, m.named);
+        console.log(m.__esModule, m.default.tag, m.named);
       `,
       "/node_modules/scheduler/package.json": /* json */ `
         { "name": "scheduler", "version": "19.0.0", "main": "index.js" }
@@ -4096,10 +4181,10 @@ describe("bundler", () => {
     outdir: "/out",
     format: "esm",
     onAfterBundle(api) {
-      api.expectFile("/out/main.js").toContain(`m = import.meta.require("./index.js");`);
-      api.expectFile("/out/index.js").not.toContain("export default");
+      api.expectFile("/out/index.js").toContain("$default as default");
+      api.expectFile("/out/index.js").toContain(`exports_scheduler as "module.exports"`);
     },
-    run: { file: "/out/main.js", stdout: "default 1" },
+    run: { file: "/out/main.js", stdout: "undefined default 1" },
   });
 
   // `bun run` loads a file with no exports as CommonJS when it calls
@@ -4129,14 +4214,14 @@ describe("bundler", () => {
     outdir: "/out",
     format: "esm",
     onAfterBundle(api) {
-      api.expectFile("/out/main.js").toMatch(/m = import\.meta\.require\("\.\/[^"]+"\)\.default;/);
+      api.expectFile("/out/main.js").toMatch(/m = import\.meta\.require\("\.\/[^"]+"\);/);
     },
     run: { file: "/out/main.js", stdout: "undefined 0 value" },
   });
 
-  // Control: a lifted file that sets `__esModule` and `default` itself has
-  // both on its chunk's namespace. The call returns that namespace, and the
-  // chunk's `default` stays the file's own for an `import()`.
+  // A lifted file that sets `__esModule` and `default` itself: the call
+  // returns its exports object, and the `default` of its chunk stays the
+  // file's own for an `import()`.
   itBundled("splitting/SplitRequireOfLiftedCommonJSWithEsModuleAndDefault", {
     matchesBunRun: true,
     files: {
@@ -4148,6 +4233,8 @@ describe("bundler", () => {
         console.log(m.__esModule, Object.keys(m).join(), m.default.tag, m.named);
         const ns = await import("react");
         console.log(ns.default.tag, ns.named);
+        m.named = 2;
+        console.log(m.named);
       `,
       "/node_modules/react/package.json": liftedCommonJSFiles["/node_modules/react/package.json"],
       "/node_modules/react/index.js": /* js */ `
@@ -4164,9 +4251,9 @@ describe("bundler", () => {
     format: "esm",
     onAfterBundle(api) {
       const chunk = chunkContaining(api, "react evaluated");
-      api.expectFile("/out/main.js").toContain(`m = import.meta.require("./${chunk}");`);
+      api.expectFile("/out/" + chunk).toContain(`exports_react as "module.exports"`);
     },
-    run: { file: "/out/main.js", stdout: "react evaluated\ntrue __esModule,default,named default 1\ndefault 1" },
+    run: { file: "/out/main.js", stdout: "react evaluated\ntrue __esModule,default,named default 1\ndefault 1\n2" },
   });
 
   // Control: an ES module inside an unwrapped package is an ES module to
@@ -4348,8 +4435,8 @@ describe("bundler", () => {
   });
 
   // A file that the lifted file imports requires it back while its chunk
-  // loads: the inner call finds no exports object yet. `bun run` prints
-  // `undefined 1 object:first`.
+  // loads: the inner call gets the placeholder of the runtime, as for any
+  // chunk. `bun run` prints `undefined 1 object:first`.
   itBundled("splitting/SplitRequireCycleThroughLiftedCommonJS", {
     files: {
       "/main.ts": /* ts */ `
@@ -4378,7 +4465,7 @@ describe("bundler", () => {
     target: "bun",
     outdir: "/out",
     format: "esm",
-    run: { file: "/out/main.js", stdout: "undefined 1 undefined:" },
+    run: { file: "/out/main.js", stdout: "undefined 1 object:" },
   });
 
   // A top-level require() in a module that the required chunk imports back

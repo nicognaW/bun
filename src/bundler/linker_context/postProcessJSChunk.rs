@@ -915,9 +915,12 @@ pub(crate) fn generate_entry_point_tail_js<'a>(
 
                     let default_is_namespace =
                         LinkerContext::chunk_default_export_is_namespace(flags, ast.flags);
+                    let module_exports_is_namespace =
+                        LinkerContext::chunk_module_exports_is_namespace(flags, ast.flags);
 
                     if !sorted_and_filtered_export_aliases.is_empty()
                         || !cross_chunk_exports.is_empty()
+                        || module_exports_is_namespace
                     {
                         let resolved_exports: &ResolvedExports =
                             &c.graph.meta.items_resolved_exports()[source_index as usize];
@@ -937,6 +940,11 @@ pub(crate) fn generate_entry_point_tail_js<'a>(
 
                         for (i, alias) in sorted_and_filtered_export_aliases.iter().enumerate() {
                             if default_is_namespace && **alias == *b"default" {
+                                continue;
+                            }
+                            // The namespace object takes the name. It has the file's
+                            // own `exports["module.exports"]` as a property.
+                            if module_exports_is_namespace && **alias == *b"module.exports" {
                                 continue;
                             }
 
@@ -1071,6 +1079,19 @@ pub(crate) fn generate_entry_point_tail_js<'a>(
                                     ..Default::default()
                                 });
                             }
+                        }
+
+                        if module_exports_is_namespace {
+                            // "export { exports_foo as "module.exports" };"
+                            items.push(bun_ast::ClauseItem {
+                                name: bun_ast::LocRef {
+                                    ref_: ast.exports_ref,
+                                    loc: bun_ast::Loc::EMPTY,
+                                },
+                                alias: bun_ast::StoreStr::new(b"module.exports"),
+                                alias_loc: bun_ast::Loc::EMPTY,
+                                ..Default::default()
+                            });
                         }
 
                         let own_len = items.len();

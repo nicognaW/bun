@@ -379,16 +379,9 @@ pub(crate) fn scan_imports_and_exports(
                             col_ref!(dynamic_import_aliases)[id].get(&(import_record_index as u32)),
                         ) {
                             // The chunk of a lifted CommonJS file exports its namespace
-                            // object as `default`, and the split call reads it there. A
-                            // `default` that `import()` must see stays, as below.
-                            let exports = &col_ref!(named_exports)[other_file];
-                            if !exports.contains(b"default")
-                                || (col_ref!(entry_point_kinds)[other_file]
-                                    != EntryPoint::Kind::UserSpecified
-                                    && !exports.contains(b"__esModule"))
-                            {
-                                col!(flags)[other_file].needs_synthetic_default_export = true;
-                            }
+                            // object as `"module.exports"`, which `require()` of an ES
+                            // module returns at run time.
+                            col!(flags)[other_file].needs_module_exports_export = true;
                         }
                     }
                     ImportKind::Dynamic => {
@@ -1021,6 +1014,10 @@ pub(crate) fn scan_imports_and_exports(
                     || LinkerContext::chunk_default_export_is_namespace(
                         flag,
                         col_ref!(ast_flags_list)[id],
+                    )
+                    || LinkerContext::chunk_module_exports_is_namespace(
+                        flag,
+                        col_ref!(ast_flags_list)[id],
                     );
                 let add_wrapper = wrap != WrapKind::None;
 
@@ -1174,27 +1171,12 @@ pub(crate) fn scan_imports_and_exports(
                             // file the linker wrapped again): the chunk exports only
                             // `default: module.exports`, so the printed call reads
                             // `.default` to return `module.exports`, the same value
-                            // an unsplit `require()` returns. A lifted file that
-                            // stays an ES module exports the object that stands in
-                            // for `module.exports` as `default` too.
+                            // an unsplit `require()` returns.
                             if kind == ImportKind::Require
                                 && is_external_dyn
                                 && rec_source_index.is_valid()
-                                && (col_ref!(exports_kind)[rec_source_index.get() as usize]
+                                && col_ref!(exports_kind)[rec_source_index.get() as usize]
                                     == ExportsKind::Cjs
-                                    || (LinkerContext::chunk_default_export_is_namespace(
-                                        col_ref!(flags)[rec_source_index.get() as usize],
-                                        col_ref!(ast_flags_list)[rec_source_index.get() as usize],
-                                    ) && require_reads_exports_object(
-                                        col_ref!(dynamic_import_aliases)[id]
-                                            .get(&(import_record_index as u32)),
-                                    ) && LinkerContext::require_returns_namespace(
-                                        col_ref!(ast_flags_list),
-                                        col_ref!(exports_kind),
-                                        col_ref!(export_star_import_records),
-                                        col_ref!(import_records_list),
-                                        rec_source_index.get(),
-                                    )))
                             {
                                 col!(import_records_list)[id].as_mut_slice()
                                     [import_record_index as usize]

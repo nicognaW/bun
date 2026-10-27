@@ -150,6 +150,9 @@ pub mod js_meta {
         pub(crate) needs_export_symbol_from_runtime: bool,
         pub(crate) did_wrap_dependencies: bool,
         pub(crate) needs_synthetic_default_export: bool,
+        /// A split `require()` observes the object it returns: the chunk of
+        /// this lifted CommonJS file exports it as `"module.exports"`.
+        pub(crate) needs_module_exports_export: bool,
         pub(crate) wrap: WrapKind,
     }
     pub use crate::WrapKind as Wrap;

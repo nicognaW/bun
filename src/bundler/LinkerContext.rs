@@ -4533,12 +4533,24 @@ impl<'a> LinkerContext<'a> {
             && ast_flags.contains(AstFlags::COMMONJS_LIFTED_TO_ESM)
     }
 
+    /// The chunk of a lifted CommonJS module exports its namespace object as
+    /// `"module.exports"`, the export that `require()` of an ES module returns.
+    pub(crate) fn chunk_module_exports_is_namespace(
+        meta_flags: crate::js_meta::Flags,
+        ast_flags: AstFlags,
+    ) -> bool {
+        meta_flags.needs_module_exports_export
+            && meta_flags.wrap != WrapKind::Cjs
+            && ast_flags.contains(AstFlags::COMMONJS_LIFTED_TO_ESM)
+    }
+
     /// Is `target` CommonJS to a `require()` call, although the parser lifted
     /// it to an ES module? Its namespace object then stands in for
     /// `module.exports`, and the call evaluates to that object: with no
-    /// `__toCommonJS` copy in the same chunk, and as the `default` export of
-    /// the file's own chunk. A lifted `module.exports = require("./impl")` is
-    /// an `export *`, so `./impl` decides.
+    /// `__toCommonJS` copy in the same chunk, and as the `"module.exports"`
+    /// export of the file's own chunk. A lifted
+    /// `module.exports = require("./impl")` is an `export *`, so `./impl`
+    /// decides.
     pub(crate) fn require_returns_namespace(
         ast_flags: &[AstFlags],
         exports_kinds: &[ExportsKind],
