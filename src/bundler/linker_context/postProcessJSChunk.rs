@@ -916,7 +916,7 @@ pub(crate) fn generate_entry_point_tail_js<'a>(
                     let default_is_namespace =
                         LinkerContext::chunk_default_export_is_namespace(flags, ast.flags);
                     let module_exports_is_namespace =
-                        LinkerContext::chunk_module_exports_is_namespace(flags, ast.flags);
+                        LinkerContext::chunk_module_exports_is_namespace(flags);
 
                     if !sorted_and_filtered_export_aliases.is_empty()
                         || !cross_chunk_exports.is_empty()

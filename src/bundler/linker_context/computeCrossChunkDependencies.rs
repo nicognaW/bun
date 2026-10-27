@@ -272,10 +272,8 @@ impl<'a, 'bump> CrossChunkDependencies<'a, 'bump> {
                     flags,
                     deps.ast_flags[chunk.entry_point.source_index() as usize],
                 );
-                let module_exports_is_namespace = LinkerContext::chunk_module_exports_is_namespace(
-                    flags,
-                    deps.ast_flags[chunk.entry_point.source_index() as usize],
-                );
+                let module_exports_is_namespace =
+                    LinkerContext::chunk_module_exports_is_namespace(flags);
                 if flags.wrap != WrapKind::Cjs {
                     let resolved_exports =
                         &deps.resolved_exports[chunk.entry_point.source_index() as usize];

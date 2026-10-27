@@ -4067,6 +4067,74 @@ describe("bundler", () => {
     run: { file: "/out/main.js", stdout: "undefined true true" },
   });
 
+  // The code of the file can be in a chunk that an entry point imports. The
+  // chunk of the call then takes the exports object from there.
+  itBundled("splitting/SplitRequireOfLiftedCommonJSAlsoImportedStatically", {
+    matchesBunRun: true,
+    files: {
+      ...liftedCommonJSFiles,
+      "/main.ts": /* ts */ `
+        import { inc } from "react";
+        let m;
+        try {
+          m = require("react");
+        } catch {}
+        m.count = 41;
+        console.log(m.__esModule, inc(), m.inc === inc);
+      `,
+    },
+    entryPoints: ["/main.ts"],
+    splitting: true,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    onAfterBundle(api) {
+      expect(
+        jsFilesIn(api).some(file => api.readFile("/out/" + file).includes(`exports_react as "module.exports"`)),
+      ).toBe(true);
+    },
+    run: { file: "/out/main.js", stdout: "react evaluated\nundefined 42 true" },
+  });
+
+  // A chunk with that export does not take the code of other chunks, also
+  // when the file has no export of its own.
+  itBundled("splitting/SplitRequireOfLiftedCommonJSWithNoExportsMinChunkSize", {
+    files: {
+      "/main.ts": /* ts */ `
+        import { shared } from "./shared";
+        let m;
+        try {
+          m = require("react");
+        } catch {}
+        const ns = await import("react");
+        const other = await import("./other");
+        console.log(m.__esModule, Object.keys(m).length, Object.keys(ns).join(), shared, other.value);
+      `,
+      "/shared.ts": /* ts */ `
+        export const shared = "shared";
+      `,
+      "/other.ts": /* ts */ `
+        import { shared } from "./shared";
+        export const value = "other " + shared;
+      `,
+      "/node_modules/react/package.json": liftedCommonJSFiles["/node_modules/react/package.json"],
+      "/node_modules/react/index.js": /* js */ `
+        const dependency = require("./dependency");
+        globalThis.fromDependency = dependency.value;
+      `,
+      "/node_modules/react/dependency.js": /* js */ `
+        exports.value = "value";
+      `,
+    },
+    entryPoints: ["/main.ts"],
+    splitting: true,
+    minChunkSize: 1024 * 1024,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    run: { file: "/out/main.js", stdout: "undefined 0 default,module.exports shared other shared" },
+  });
+
   // The file can have an export with that name itself. It stays a property
   // of the exports object.
   itBundled("splitting/SplitRequireOfLiftedCommonJSWithModuleExportsName", {

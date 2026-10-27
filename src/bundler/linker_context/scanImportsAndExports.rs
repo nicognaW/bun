@@ -1015,10 +1015,7 @@ pub(crate) fn scan_imports_and_exports(
                         flag,
                         col_ref!(ast_flags_list)[id],
                     )
-                    || LinkerContext::chunk_module_exports_is_namespace(
-                        flag,
-                        col_ref!(ast_flags_list)[id],
-                    );
+                    || LinkerContext::chunk_module_exports_is_namespace(flag);
                 let add_wrapper = wrap != WrapKind::None;
 
                 let extra_count = (include_namespace as usize) + (add_wrapper as usize);

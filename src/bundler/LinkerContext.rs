@@ -4535,13 +4535,8 @@ impl<'a> LinkerContext<'a> {
 
     /// The chunk of a lifted CommonJS module exports its namespace object as
     /// `"module.exports"`, the export that `require()` of an ES module returns.
-    pub(crate) fn chunk_module_exports_is_namespace(
-        meta_flags: crate::js_meta::Flags,
-        ast_flags: AstFlags,
-    ) -> bool {
-        meta_flags.needs_module_exports_export
-            && meta_flags.wrap != WrapKind::Cjs
-            && ast_flags.contains(AstFlags::COMMONJS_LIFTED_TO_ESM)
+    pub(crate) fn chunk_module_exports_is_namespace(meta_flags: crate::js_meta::Flags) -> bool {
+        meta_flags.needs_module_exports_export && meta_flags.wrap != WrapKind::Cjs
     }
 
     /// Is `target` CommonJS to a `require()` call, although the parser lifted
