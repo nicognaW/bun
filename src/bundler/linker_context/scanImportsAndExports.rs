@@ -108,7 +108,6 @@ pub(crate) fn scan_imports_and_exports(
     let ast_flags_list: *mut [AstFlags] = ast.flags;
     let module_types: *mut [crate::options::ModuleType] = ast.module_type;
     let export_star_import_records: *mut [bun_alloc::AstVec<u32>] = ast.export_star_import_records;
-    let redirects: *mut [u32] = ast.redirect_import_record_index;
     let exports_refs: *mut [Ref] = ast.exports_ref;
     let module_refs: *mut [Ref] = ast.module_ref;
     let wrapper_refs: *mut [Ref] = ast.wrapper_ref;
@@ -283,6 +282,15 @@ pub(crate) fn scan_imports_and_exports(
                                 {
                                     col!(dyn_ref_aliases)[other_file].merge_all()
                                 }
+                                // `require()` reads these two names off the namespace object.
+                                Some(dynamic_use)
+                                    if record.kind == ImportKind::Require
+                                        && other_flags
+                                            .contains(AstFlags::COMMONJS_LIFTED_TO_ESM)
+                                        && require_reads_exports_object(Some(dynamic_use)) =>
+                                {
+                                    col!(dyn_ref_aliases)[other_file].merge_all()
+                                }
                                 Some(dynamic_use) => {
                                     col!(dyn_ref_aliases)[other_file]
                                         .merge_partial(dynamic_use.aliases.slice());
@@ -369,6 +377,25 @@ pub(crate) fn scan_imports_and_exports(
                                 // TODO: introduce a NamedRequire for require("./foo").Bar AST nodes to support tree-shaking those.
                                 col!(flags)[other_file].wrap = WrapKind::Cjs;
                                 col!(exports_kind)[other_file] = ExportsKind::Cjs;
+                            }
+                        } else if require_reads_exports_object(
+                            col_ref!(dynamic_import_aliases)[id].get(&(import_record_index as u32)),
+                        ) && col_ref!(entry_point_kinds)[other_file]
+                            != EntryPoint::Kind::UserSpecified
+                            && LinkerContext::require_returns_namespace(
+                                col_ref!(ast_flags_list),
+                                col_ref!(exports_kind),
+                                col_ref!(export_star_import_records),
+                                col_ref!(import_records_list),
+                                other_file as u32,
+                            )
+                        {
+                            // The chunk of a lifted CommonJS file exports its namespace
+                            // object as `default`, and the split call reads it there. A
+                            // file with its own `__esModule` and `default` keeps both.
+                            let exports = &col_ref!(named_exports)[other_file];
+                            if !(exports.contains(b"default") && exports.contains(b"__esModule")) {
+                                col!(flags)[other_file].needs_synthetic_default_export = true;
                             }
                         }
                     }
@@ -1150,19 +1177,6 @@ pub(crate) fn scan_imports_and_exports(
                                 runtime_require_uses += 1;
                             }
 
-                            debug_assert!(
-                                !(kind == ImportKind::Require && is_external_dyn)
-                                    || !LinkerContext::require_returns_namespace(
-                                        col_ref!(ast_flags_list),
-                                        col_ref!(exports_kind),
-                                        col_ref!(export_star_import_records),
-                                        col_ref!(import_records_list),
-                                        col_ref!(redirects),
-                                        rec_source_index.get(),
-                                    ),
-                                "find_reachable_files splits no require() of a lifted CommonJS file"
-                            );
-
                             // A split `require()` whose target is CommonJS at link
                             // time (for example a lifted `module.exports = require()`
                             // file the linker wrapped again): the chunk exports only
@@ -1172,8 +1186,21 @@ pub(crate) fn scan_imports_and_exports(
                             if kind == ImportKind::Require
                                 && is_external_dyn
                                 && rec_source_index.is_valid()
-                                && col_ref!(exports_kind)[rec_source_index.get() as usize]
+                                && (col_ref!(exports_kind)[rec_source_index.get() as usize]
                                     == ExportsKind::Cjs
+                                    || (LinkerContext::chunk_default_export_is_namespace(
+                                        col_ref!(flags)[rec_source_index.get() as usize],
+                                        col_ref!(ast_flags_list)[rec_source_index.get() as usize],
+                                    ) && require_reads_exports_object(
+                                        col_ref!(dynamic_import_aliases)[id]
+                                            .get(&(import_record_index as u32)),
+                                    ) && LinkerContext::require_returns_namespace(
+                                        col_ref!(ast_flags_list),
+                                        col_ref!(exports_kind),
+                                        col_ref!(export_star_import_records),
+                                        col_ref!(import_records_list),
+                                        rec_source_index.get(),
+                                    )))
                             {
                                 col!(import_records_list)[id].as_mut_slice()
                                     [import_record_index as usize]
@@ -1303,7 +1330,6 @@ pub(crate) fn scan_imports_and_exports(
                                         col_ref!(exports_kind),
                                         col_ref!(export_star_import_records),
                                         col_ref!(import_records_list),
-                                        col_ref!(redirects),
                                         other_source_index,
                                     ))
                             {
@@ -1469,6 +1495,21 @@ pub(crate) fn scan_imports_and_exports(
 }
 
 #[inline]
+/// Does a `require()` observe the object it returns: no tracked use, or a
+/// read of `default` or `__esModule`? Any other tracked name is the same
+/// binding on a chunk's namespace as on the file's exports object.
+fn require_reads_exports_object(
+    dynamic_use: Option<&bun_ast::ast_result::DynamicImportUse>,
+) -> bool {
+    dynamic_use.is_none_or(|dynamic_use| {
+        dynamic_use
+            .aliases
+            .slice()
+            .iter()
+            .any(|alias| matches!(alias.slice(), b"default" | b"__esModule"))
+    })
+}
+
 fn should_call_runtime_require(format: options::Format) -> bool {
     format != Format::Cjs
 }
