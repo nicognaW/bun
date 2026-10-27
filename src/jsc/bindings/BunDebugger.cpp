@@ -222,8 +222,7 @@ public:
         });
     }
 
-    // Only for a connection that is attached. The controller that it is attached to keeps `globalObject` alive
-    // until its last frontend detaches (JSGlobalObjectInspectorController::m_strongGlobalObject).
+    // Only while attached: the controller it is attached to keeps `globalObject` alive (m_strongGlobalObject).
     JSC::JSGlobalObjectDebuggable& inspector()
     {
         return globalObject->inspectorDebuggable();
@@ -597,8 +596,8 @@ extern "C" void Bun__ensureDebugger(ScriptExecutionContextIdentifier scriptId, b
     // (BunInjectedScriptHost, and BunJSGlobalObjectDebuggable's
     // unpauseForResolvedAutomaticInspection hook that resolves
     // wait-for-debugger). Once installed, never recreate: destroying a
-    // controller that ever had a frontend attached, even one that has
-    // disconnected since, aborts (see leakInspectorControllerThatHadFrontend
+    // controller that ever had a frontend attached — even a since-disconnected
+    // one, trips the CheckedPtr ordering bug (see leakInspectorControllerThatHadFrontend
     // below). node:inspector re-enters this from waitForDebugger() at runtime.
     if (!bunControllerInstalled) {
         bunControllerInstalled = true;
@@ -1046,19 +1045,14 @@ extern "C" void Bun__InspectorConnection__disconnectAllOnExit(Zig::GlobalObject*
         connection->inspector().disconnect(*connection);
 }
 
-// Leaks the controller of a dying global once a frontend made it create its lazy agents, and hands the global a
-// fresh, never-connected one. Delete this only when both of these are fixed:
-// 1. WebKit (https://github.com/oven-sh/WebKit/pull/925): ~AgentRegistry destroys the console agent while
-//    JSGlobalObjectDebuggerAgent still holds a CheckedPtr to it (crashDueToCheckedPtrToDeadObject).
-// 2. receiveMessagesOnInspectorThread dispatches to the controller of the current global. So a client of an earlier
-//    `bun test --isolate` file can enable agents here that nothing disables, and a destroyed InspectorHeapAgent
-//    stays in Heap::m_observers.
+// The destructor of a controller that made its lazy agents aborts: https://github.com/oven-sh/WebKit/pull/925
 void leakInspectorControllerThatHadFrontend(JSC::JSGlobalObject& globalObject)
 {
     if (!globalObject.m_inspectorController->debugger())
         return;
 
     globalObject.m_inspectorController->globalObjectDestroyed();
+    // Needed after that fix too: a client of an earlier file can enable the heap agent here, and the Heap keeps a pointer to it.
     [[maybe_unused]] auto* leakedController = globalObject.m_inspectorController.release();
     globalObject.m_inspectorController = makeUnique<Inspector::JSGlobalObjectInspectorController>(globalObject, Bun::BunInjectedScriptHost::create());
 }
