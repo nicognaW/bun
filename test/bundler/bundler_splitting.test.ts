@@ -4069,6 +4069,39 @@ describe("bundler", () => {
     run: { file: "/out/main.js", stdout: "react evaluated\nundefined 42" },
   });
 
+  // Control: an entry point with a `default` export of its own keeps it for
+  // its importers, and the call returns the module namespace of its file.
+  itBundled("splitting/SplitRequireOfLiftedCommonJSEntryPointWithDefault", {
+    matchesBunRun: true,
+    files: {
+      "/main.ts": /* ts */ `
+        let m;
+        try {
+          m = require("scheduler");
+        } catch {}
+        console.log(m.default.tag, m.named);
+      `,
+      "/node_modules/scheduler/package.json": /* json */ `
+        { "name": "scheduler", "version": "19.0.0", "main": "index.js" }
+      `,
+      "/node_modules/scheduler/index.js": /* js */ `
+        exports.default = { tag: "default" };
+        exports.named = 1;
+      `,
+    },
+    entryPoints: ["/main.ts", "/node_modules/scheduler/index.js"],
+    entryNaming: "[name].[ext]",
+    splitting: true,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    onAfterBundle(api) {
+      api.expectFile("/out/main.js").toContain(`m = import.meta.require("./index.js");`);
+      api.expectFile("/out/index.js").not.toContain("export default");
+    },
+    run: { file: "/out/main.js", stdout: "default 1" },
+  });
+
   // `bun run` loads a file with no exports as CommonJS when it calls
   // require(), which the parser turned into an import.
   itBundled("splitting/SplitRequireOfLiftedCommonJSWithNoExports", {
@@ -4169,6 +4202,44 @@ describe("bundler", () => {
       api.expectFile("/out/main.js").toContain(`m = import.meta.require("./${chunk}");`);
     },
     run: { file: "/out/main.js", stdout: "react evaluated\ntrue value" },
+  });
+
+  // Control: a lifted `module.exports = require()` of an ES module returns
+  // what require() of that module returns. An `import()` gives the chunk a
+  // `default`, which is not that value.
+  itBundled("splitting/SplitRequireOfLiftedReExportOfESModuleWithImport", {
+    matchesBunRun: true,
+    files: {
+      "/main.ts": /* ts */ `
+        let m;
+        try {
+          m = require("react-is");
+        } catch {}
+        const ns = await import("react-is");
+        console.log(m.__esModule, typeof m.isElement, Object.keys(ns).join());
+      `,
+      "/node_modules/react-is/package.json": /* json */ `
+        { "name": "react-is", "version": "19.0.0", "main": "index.js" }
+      `,
+      "/node_modules/react-is/index.js": /* js */ `
+        globalThis.sideEffect = true;
+        module.exports = require("./impl.mjs");
+      `,
+      "/node_modules/react-is/impl.mjs": /* js */ `
+        export const isElement = () => true;
+      `,
+    },
+    entryPoints: ["/main.ts"],
+    splitting: true,
+    target: "bun",
+    outdir: "/out",
+    format: "esm",
+    onAfterBundle(api) {
+      const chunk = chunkContaining(api, "sideEffect");
+      api.expectFile("/out/main.js").toContain(`m = import.meta.require("./${chunk}");`);
+      api.expectFile("/out/" + chunk).toContain("export default exports_react_is;");
+    },
+    run: { file: "/out/main.js", stdout: "true function default,isElement" },
   });
 
   // A lifted `module.exports = require()` of an external package is still a
