@@ -1004,7 +1004,6 @@ pub(crate) fn merge_small_chunks(
             && (this.options.compile_mode.is_executable() || host_names_url(source_index)))
             || flags[source_index].wrap == WrapKind::Cjs
             || flags[source_index].needs_synthetic_default_export
-            || flags[source_index].needs_module_exports_export
             || !export_aliases[source_index].is_empty()
     };
     let group_of_file: &mut [usize] = temp.alloc_slice_fill_copy(files_len, usize::MAX);
