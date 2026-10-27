@@ -38,6 +38,9 @@ type FD = number;
 
 const { validateInteger, validateInt32, validateFunction } = require("internal/validators");
 
+const isWindows = process.platform === "win32";
+const windowsHandleToFd = $bindgen("node_fs_binding.bind.ts", "windowsHandleToFd");
+
 const kIsPerformingIO = Symbol("kIsPerformingIO");
 const kIoDone = Symbol("kIoDone");
 // Bun supports a fast path for `createWriteStream("path.txt")` where instead of
@@ -130,6 +133,24 @@ function getStreamOptions(options, defaultOptions = {}) {
   return options;
 }
 
+// https://github.com/nodejs/node/blob/98dbf6070e8439e530f1678b11962a0f3719e1f6/lib/internal/fs/streams.js#L169
+function validateWindowsHandle(windowsHandle, fd, customFs) {
+  if (fd != null) {
+    throw $ERR_INCOMPATIBLE_OPTION_PAIR('Option "windowsHandle" cannot be used in combination with option "fd"');
+  }
+  if (!isWindows) {
+    throw $ERR_FEATURE_UNAVAILABLE_ON_PLATFORM(
+      "The feature windowsHandle is unavailable on the current platform, which is being used to run Node.js",
+    );
+  }
+  if (customFs) {
+    throw $ERR_METHOD_NOT_IMPLEMENTED("windowsHandle with fs");
+  }
+  if (typeof windowsHandle !== "bigint") {
+    throw $ERR_INVALID_ARG_TYPE("options.windowsHandle", "bigint", windowsHandle);
+  }
+}
+
 function ReadStream(this: FSStream, path, options): void {
   if (!(this instanceof ReadStream)) {
     return new ReadStream(path, options);
@@ -140,9 +161,12 @@ function ReadStream(this: FSStream, path, options): void {
   // Only buffers are supported.
   options.decodeStrings = true;
 
-  let { fd, autoClose, fs: customFs, start, end = Infinity } = options;
+  let { fd, autoClose, fs: customFs, start, end = Infinity, windowsHandle } = options;
 
-  if (fd == null) {
+  if (windowsHandle != null) {
+    validateWindowsHandle(windowsHandle, fd, customFs);
+    this[kFs] = fs;
+  } else if (fd == null) {
     this[kFs] = customFs || fs;
     this.fd = null;
     this.path = getValidatedPath(path);
@@ -204,6 +228,10 @@ function ReadStream(this: FSStream, path, options): void {
       throw $ERR_OUT_OF_RANGE("start", `<= "end" (here: ${end})`, start);
     }
   }
+
+  // Node wraps the HANDLE before validating the other options, which leaks the
+  // CRT fd when one of them throws. Wrapping last leaves the caller owning it.
+  if (windowsHandle != null) this.fd = windowsHandleToFd(windowsHandle);
 
   Readable.$call(this, options);
   return this as unknown as void;
@@ -383,8 +411,11 @@ function WriteStream(this: FSStream, path: string | null | undefined, options?: 
   // Only buffers are supported.
   options.decodeStrings = true;
 
-  let { fd, autoClose, fs: customFs, start, flush } = options;
-  if (fd == null) {
+  let { fd, autoClose, fs: customFs, start, flush, windowsHandle } = options;
+  if (windowsHandle != null) {
+    validateWindowsHandle(windowsHandle, fd, customFs);
+    this[kFs] = fs;
+  } else if (fd == null) {
     this[kFs] = customFs || fs;
     this.fd = null;
     // Internal $fastPath callers (writableFromFileSink) discard .path; do not
@@ -484,6 +515,10 @@ function WriteStream(this: FSStream, path: string | null | undefined, options?: 
       this._construct = undefined;
     }
   }
+
+  // Node wraps the HANDLE before validating the other options, which leaks the
+  // CRT fd when one of them throws. Wrapping last leaves the caller owning it.
+  if (windowsHandle != null) this.fd = windowsHandleToFd(windowsHandle);
 
   Writable.$call(this, options);
 
