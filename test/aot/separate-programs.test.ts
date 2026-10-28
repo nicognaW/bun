@@ -33,7 +33,14 @@ test("--aot-separate-programs compiles every entry point as a program of its own
   expect(await startAt("a/first.ts")).toEqual({ stdout: "first true true x,y\n", exitCode: 0 });
   expect(await startAt("a/evaluates.js")).toEqual({ stdout: "evaluates true 2\n", exitCode: 3 });
   expect(await startAt("b/typed.ts")).toEqual({ stdout: "typed 1 b/typed.ts\n", exitCode: 0 });
+  if (isWindows)
+    expect(await startAt("b\\typed.ts")).toEqual({ stdout: "typed 1 b/typed.ts\n", exitCode: 0 });
+  else expect(await startAt("b\\typed.ts")).toEqual({ stdout: "", exitCode: 1 });
+  expect(await startAt("b/Typed.ts")).toEqual({ stdout: "", exitCode: 1 });
   expect(await startAt("b/none.ts")).toEqual({ stdout: "", exitCode: 1 });
+  const missing = await run([executable], cwd, { ...bunEnv, BUN_AOT_START_AT: "b/none.ts" });
+  expect(missing.exitCode).toBe(1);
+  expect(missing.stderr).toContain("BUN_AOT_START_AT names no entry point");
 });
 
 // Which of Bun's own code stands behind a member that is read by its name is a guess. The engine follows values: a program that it finds

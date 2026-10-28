@@ -20,6 +20,8 @@ use bun_paths::SEP_STR;
 use bun_paths::fs as bun_fs;
 use bun_paths::{self as path, PathBuffer, strings};
 use bun_resolver::LINKED_BYTECODE_REGION_COUNT;
+#[cfg(not(bun_locked_environment))]
+use bun_resolver::compiled_program::compare_source_paths;
 use bun_resolver::compiled_program::{CompiledEntryPoint, CompiledProgram, ImageFile};
 use bun_sourcemap as SourceMap;
 use bun_sys::{self as Syscall, E, Fd, FdExt as _, Stat};
@@ -137,7 +139,13 @@ fn start_at_named_entry_point(
     let name = bun_core::env_var::BUN_AOT_START_AT.get()?;
     let is_named = |entry_point: &CompiledEntryPoint| {
         let root = BASE_PUBLIC_PATH_WITH_DEFAULT_SUFFIX.as_bytes();
-        entry_point.module_path.strip_prefix(root) == Some(name)
+        entry_point
+            .module_path
+            .split_at_checked(root.len())
+            .is_some_and(|(prefix, relative)| {
+                compare_source_paths(prefix, root).is_eq()
+                    && compare_source_paths(relative, name).is_eq()
+            })
     };
     let has_image_for_each = program.images().nth(1).is_some();
     let position = program.entry_points.iter().position(is_named);
