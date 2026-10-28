@@ -672,6 +672,9 @@ test("LifecycleReporter.getModuleGraph reports an empty argv when process.argv i
   webSocket.close();
 });
 
+// The time that a test file of a `bun test` child can wait for the test, so that no child stays behind.
+const childTestTimeout = 30_000;
+
 /** A `bun test` child. Its test files report on stderr, and wait for the test to let them continue. */
 class TestRun {
   readonly process: Subprocess<"ignore", "ignore", "pipe">;
@@ -685,7 +688,7 @@ class TestRun {
     this.#cwd = cwd;
     this.#end.promise.catch(() => {});
     this.process = spawn({
-      cmd: [bunExe(), "test", ...args],
+      cmd: [bunExe(), "test", `--timeout=${childTestTimeout}`, ...args],
       cwd,
       env,
       stdin: "ignore",
@@ -810,6 +813,7 @@ function listenAsEditor(dialers = 1) {
 
 // `bun test --isolate` gives each test file a new global object. The GC destroys the global object
 // of a file that finished, and with it the inspector controller that a client attached to.
+// Not concurrent: together, the children of a debug build bring one case close to the default timeout.
 describe("bun test --isolate", () => {
   const env = {
     ...bunEnv,
@@ -822,8 +826,6 @@ describe("bun test --isolate", () => {
   // A compilation that waits for a JIT thread keeps the global object of a finished file alive.
   const envWithoutJITThreads = { ...env, BUN_JSC_useConcurrentJIT: "0" };
   const passed = (pass: number) => ({ pass, fail: 0, exitCode: 0, signalCode: null });
-  // A test file that waits for the test gives up after this time, so that no child stays behind.
-  const waitLimit = 30_000;
 
   // The GC destroys the global object of each file that finished, if nothing keeps it alive.
   const collect = `
@@ -845,7 +847,7 @@ describe("bun test --isolate", () => {
     test("waits for ${name}", async () => {${collect}
       process.stderr.write("READY ${name}\\n");
       while (!existsSync(join(import.meta.dir, "continue-${name}"))) await Bun.sleep(1);${collect}
-    }, ${waitLimit});
+    });
   `;
 
   test("a file that closed the client of its own node:inspector does not make a later file abort", async () => {
@@ -867,7 +869,7 @@ describe("bun test --isolate", () => {
           expect(await reply.promise).toEqual({ debuggerId: "(bun)" });
           // Returns after the inspector dropped the client.
           inspector.close();
-        }, ${waitLimit});
+        });
       `,
       "b.test.ts": collectingTestFile,
     });
@@ -946,7 +948,7 @@ describe("bun test --isolate", () => {
         test("holds the inspected thread after its last turn", () => {
           setImmediate(() => {
             writeSync(2, "READY A\\n");
-            const deadline = Date.now() + ${waitLimit};
+            const deadline = Date.now() + ${childTestTimeout};
             while (!existsSync(join(import.meta.dir, "continue-A")) && Date.now() < deadline) Bun.sleepSync(1);
           });
         });
