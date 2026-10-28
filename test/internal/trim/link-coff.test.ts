@@ -125,6 +125,55 @@ describeLink("a trimmable link with lld-link", () => {
     await expectFeatureRemoved(String(dir), "x64");
   });
 
+  test.skipIf(!canRun("x64"))("does not classify unrelated native exceptions as removed-feature entry", async () => {
+    using dir = tempDir("trim-coff-exceptions", {
+      ...sources,
+      "main.cpp":
+        embedderSource("coff") +
+        String.raw`
+extern "C" int entered(int);
+static LONG CALLBACK otherFault(EXCEPTION_POINTERS *) { _exit(72); return EXCEPTION_CONTINUE_SEARCH; }
+int main(int argc, char **argv) {
+    if (argc > 5) return GUARDED(${indexOf(Extra)}, entered, argc) & 63;
+    const RemovableFeatureState *state = &Bun__removableFeatureState;
+    EXCEPTION_RECORD record = {};
+    EXCEPTION_POINTERS exception = { &record, 0 };
+    record.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
+    record.ExceptionAddress = (void *)&main;
+    if (argc > 1 && argv[1][0] == 'r') {
+        if (!AddVectoredExceptionHandler(0, otherFault)) return 73;
+        RaiseException(EXCEPTION_ILLEGAL_INSTRUCTION, 0, 0, 0);
+        return 74;
+    }
+    if (state->isTrimmed && argc > 1 && argv[1][0] != 'o') {
+        if (!state->removedRangeCount) return 75;
+        const ToyRemovedRange *ranges = (const ToyRemovedRange *)((ULONG_PTR)state + (ULONG_PTR)state->removedRangesOffset);
+        record.ExceptionAddress = (void *)((ULONG_PTR)state + (ULONG_PTR)ranges[0].start);
+        if (argv[1][0] == 'd') {
+            record.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
+            record.NumberParameters = 2;
+            record.ExceptionInformation[0] = 0;
+            record.ExceptionInformation[1] = (ULONG_PTR)state;
+        } else if (argv[1][0] == 'u') record.ExceptionCode = EXCEPTION_INT_DIVIDE_BY_ZERO;
+    }
+    return toyRemovedFeature(&exception) == EXCEPTION_CONTINUE_SEARCH ? 0 : 1;
+}
+`,
+    });
+    const folder = String(dir);
+    const program = await linked(folder, { objects: ["feature_code", "entry", "table", "main"] });
+    expect(program.featuresOf("entered")).toEqual([Extra]);
+    expectCleanRuns(program);
+    for (const name of [output, "trimmed.exe"]) {
+      for (const mode of ["outside", "data", "unsupported"]) {
+        expect(await exitCodeOf(folder, name, [mode])).toBe(0);
+      }
+      expect(await exitCodeOf(folder, name, ["raise"])).toBe(72);
+    }
+    expect(await exitCodeOf(folder, output, ["positive"])).toBe(0);
+    expect(await exitCodeOf(folder, "trimmed.exe", ["positive"])).toBe(70);
+  });
+
   test.skipIf(arm64SkipReason !== undefined)(
     "does the same for arm64, with ADDR64 records and brk as fill",
     async () => {
@@ -336,12 +385,14 @@ __asm__(".section .rdata$note,\"dr\",associative,parent\n.quad feature_noted\n.t
   "equal read-only data without an external name": {
     more: `static const int feature_primes[64] = { 2, 3, 5, 7, 11 }; int more(int x) { return feature_primes[x & 63]; }`,
     declarations: "static const int retained_primes[64] = { 2, 3, 5, 7, 11 };",
-    result: "retained_primes[argc] == 3 ? 0 : 1",
+    // An ordinary lookup-and-compare folds to argc == 1 without reading the data.
+    result: "*static_cast<const volatile int*>(&retained_primes[static_cast<unsigned>(argc) & 63]) == 3 ? 0 : 1",
     retained: [],
     check({ addressOf, featuresOf }) {
-      const listed = ["retained_primes", "feature_primes"].filter(name => !Number.isNaN(addressOf(name)));
-      expect(listed).not.toEqual([]);
-      expect(listed.map(featuresOf)).toEqual(listed.map(() => undefined));
+      expect(featuresOf("retained_primes")).toBeUndefined();
+      // Equal data need not fold; only a shared copy inherits the retained reference.
+      const folded = addressOf("retained_primes") === addressOf("feature_primes");
+      expect(featuresOf("feature_primes")).toEqual(folded ? undefined : [Extra]);
     },
   },
   "an archive member": { ...foldedFunction, archives: { "shelf.lib": ["feature_code", "more"] } },
@@ -477,11 +528,55 @@ extern "C" int second(int x) { return guarded(x); }
 extern "C" int unreferenced(int x) { return ${guard(Extra, "Abort", "entered")}(x); }
 `,
 };
-const inlineGuardFlags = ["-O0", "-fno-inline", "-fno-addrsig"];
+// The -O0 fixture needs the header's release ALWAYS_INLINE for caller records.
+const inlineGuardFlags = ["-O0", "-fno-inline", "-fno-addrsig", "-DNDEBUG"];
 const inlineGuardOptions: LinkOptions = {
   objects: [...guardObjects, "second"],
   compileFlags: { main: inlineGuardFlags, second: inlineGuardFlags },
 };
+
+const equalEntry = (name: string) =>
+  `int ${name}(int x) { for (int i = 0; i < 5; i++) x += feature_code(x + i) * 3 + feature_code(x ^ i); return x; }`;
+
+function expectFoldedState(program: LinkedProgram, executable: string, removed: (typeof Extra | typeof Other)[]) {
+  const { file: bytes, sections } = readPe(executable);
+  const section = sections.find(section => section.name === ".bunfeat")!;
+  expect(bytes.toString("latin1", section.rawPointer, section.rawPointer + 8)).toBe("BUNFEAT\0");
+  expect(bytes.readUInt32LE(section.rawPointer + 8)).toBe(removed.length === 0 ? 0 : 1);
+  // The internal trimExecutable helper marks its feature list Unused (1), rather than Requested (2).
+  for (const feature of [Extra, Other]) {
+    expect(bytes[section.rawPointer + 24 + indexOf(feature)]).toBe(removed.includes(feature) ? 1 : 0);
+  }
+  const image = peImage(executable);
+  const address = program.addressOf("entered");
+  const unavailable: number[] = [];
+  const count = bytes.readUInt32LE(section.rawPointer + 12);
+  expect(count).toBeLessThanOrEqual(32768);
+  if (count !== 0) {
+    // Runtime records use signed offsets from .bunfeat, including live refused entry points.
+    const relativeList = bytes.readBigInt64LE(section.rawPointer + 16);
+    expect(relativeList % 8n).toBe(0n);
+    const list = BigInt(section.address) + relativeList;
+    expect(Number.isSafeInteger(Number(list))).toBe(true);
+    const records = image.bytes(Number(list), count * 16);
+    expect(records).toBeDefined();
+    const relativeAddress = BigInt(address) - BigInt(section.address);
+    for (let offset = 0; offset < count * 16; offset += 16) {
+      const start = records!.readBigInt64LE(offset);
+      const size = BigInt(records!.readUInt32LE(offset + 8));
+      if (relativeAddress >= start && relativeAddress - start < size) {
+        unavailable.push(records!.readUInt16LE(offset + 12));
+      }
+    }
+  }
+  if (removed.length < 2) {
+    expect(unavailable).toEqual([]);
+    expect(image.bytes(address, 16)).toEqual(peImage(program.executable).bytes(address, 16));
+  } else {
+    expect(unavailable).toHaveLength(1);
+    expect([indexOf(Extra), indexOf(Other)]).toContain(unavailable[0]!);
+  }
+}
 
 describeLink("two features", () => {
   const objects = ["feature_code", "entry", "other", "embedder", "main"];
@@ -544,30 +639,46 @@ extern "C" int entered(int x) { return feature_code(x) * 3 + ${guard(Other, "Abo
     ]);
   });
 
-  test("with equal entry points fold into one body, removed only with both", async () => {
-    const equalEntry = (name: string) =>
-      `int ${name}(int x) { for (int i = 0; i < 5; i++) x += feature_code(x + i) * 3 + feature_code(x ^ i); return x; }`;
+  test("with checked callers, equal entry points share one body removed only with both", async () => {
     using dir = tempDir("trim-coff-folded", {
       ...sources,
       "entry.c": `int feature_code(int); ${equalEntry("entered")} ${equalEntry("entry_of_other")}`,
       "main.cpp": `#include "toy.h"
 extern "C" { int entered(int); int entry_of_other(int); }
 int main(int argc, char**) {
-  if (argc == 2) return ${guard(Extra, "Abort", "entered")}(argc) & 63;
-  if (argc == 3) return ${guard(Other, "Abort", "entry_of_other")}(argc) & 63;
+  // Match the explicit per-feature caller checks in the ELF and Mach-O fixtures.
+  if (argc == 2) {
+    if (JSC::isFeatureRemoved(JSC::RemovableFeature::${Extra}))
+      JSC::Bun__abortForRemovedFeature(static_cast<uint16_t>(JSC::RemovableFeature::${Extra}));
+    return ${guard(Extra, "Abort", "entered")}(argc) & 63;
+  }
+  if (argc == 3) {
+    if (JSC::isFeatureRemoved(JSC::RemovableFeature::${Other}))
+      JSC::Bun__abortForRemovedFeature(static_cast<uint16_t>(JSC::RemovableFeature::${Other}));
+    return ${guard(Other, "Abort", "entry_of_other")}(argc) & 63;
+  }
   return 0;
 }
 `,
     });
     const folder = String(dir);
-    const { executable, table, addressOf, featuresOf, retainedAddresses, programResult } = await linked(folder, {
+    const program = await linked(folder, {
       objects: guardObjects,
     });
+    const { executable, table, addressOf, featuresOf, retainedAddresses, programResult } = program;
     expect(addressOf("entered")).toBe(addressOf("entry_of_other"));
     expect(featuresOf("entered")).toEqual(byIndex(Extra, Other));
+    expect(table.edges).toEqual([]);
+    expectFoldedState(program, executable, []);
+    expectFoldedState(program, program.trimmedExecutable, [Extra]);
+    const withoutOther = "without-other.exe";
+    trimExecutable(executable, join(folder, withoutOther), [Other]);
+    expectSoundPe({ folder, table, removed: [Other], retainedAddresses, trimmedName: withoutOther });
+    expectFoldedState(program, join(folder, withoutOther), [Other]);
     const withoutBoth = "without-both.exe";
     trimExecutable(executable, join(folder, withoutBoth), [Extra, Other]);
     expectSoundPe({ folder, table, removed: [Extra, Other], retainedAddresses, trimmedName: withoutBoth });
+    expectFoldedState(program, join(folder, withoutBoth), [Extra, Other]);
     if (programResult === undefined) return;
     const exitCodes = async (name: string) => [
       await exitCodeOf(folder, name, ["a"]),
@@ -576,8 +687,81 @@ int main(int argc, char**) {
     const originalCodes = await exitCodes(output);
     expect(originalCodes).not.toContain(70);
     expect(await exitCodes("trimmed.exe")).toEqual([70, originalCodes[1]!]);
+    expect(await exitCodes(withoutOther)).toEqual([originalCodes[0]!, 70]);
     expect(await exitCodes(withoutBoth)).toEqual([70, 70]);
   });
+
+  for (const language of ["C++", "Rust"] as const) {
+    test.skipIf(language === "Rust" && (!canRun("x64") || rustc === null))(
+      `with folded entry points, raw ${language} Abort calls test no feature state`,
+      async () => {
+        // Separate C objects leave folding to lld instead of Rust's pre-link aliasing.
+        const rust = `#![no_std]
+use bun_removable_features::call_removable;
+#[panic_handler]
+fn panic(_: &core::panic::PanicInfo) -> ! { loop {} }
+#[unsafe(no_mangle)]
+extern "C" fn rust_eh_personality() {}
+unsafe extern "C" {
+    safe fn entered(x: i32) -> i32;
+    safe fn entry_of_other(x: i32) -> i32;
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn raw_extra(x: i32) -> i32 { call_removable!(${Extra}, Abort, entered, x) }
+#[unsafe(no_mangle)]
+pub extern "C" fn raw_other(x: i32) -> i32 { call_removable!(${Other}, Abort, entry_of_other, x) }
+`;
+        const main =
+          language === "Rust"
+            ? `extern "C" { int raw_extra(int); int raw_other(int); }
+int main(int argc, char**) {
+  if (argc == 2) return raw_extra(argc) & 63;
+  if (argc == 3) return raw_other(argc) & 63;
+  return 0;
+}`
+            : `#include "toy.h"
+extern "C" { int entered(int); int entry_of_other(int); }
+int main(int argc, char**) {
+  if (argc == 2) return ${guard(Extra, "Abort", "entered")}(argc) & 63;
+  if (argc == 3) return ${guard(Other, "Abort", "entry_of_other")}(argc) & 63;
+  return 0;
+}`;
+        using dir = tempDir("trim-coff-folded-raw", {
+          ...(language === "Rust" ? rustFiles(rust) : sources),
+          "entry.c": `int feature_code(int); ${equalEntry("entered")} ${equalEntry("entry_of_other")}`,
+          "main.cpp": main,
+        });
+        const folder = String(dir);
+        const options = language === "Rust" ? await compileRustInputs(folder) : { objects: guardObjects };
+        expect(options).toBeDefined();
+        const program = await linked(folder, { ...options!, objects: guardObjects });
+        const { executable, table, retainedAddresses, addressOf, featuresOf } = program;
+        expect(addressOf("entered")).toBe(addressOf("entry_of_other"));
+        expect(featuresOf("entered")).toEqual(byIndex(Extra, Other));
+        expect(table.edges).toEqual([]);
+        expectFoldedState(program, executable, []);
+        expectFoldedState(program, program.trimmedExecutable, [Extra]);
+        const exitCodes = async (name: string) => [
+          await exitCodeOf(folder, name, ["a"]),
+          await exitCodeOf(folder, name, ["a", "b"]),
+        ];
+        const originalCodes = program.programResult === undefined ? undefined : await exitCodes(output);
+        if (originalCodes) {
+          expect(originalCodes).not.toContain(70);
+          expect(await exitCodes("trimmed.exe")).toEqual(originalCodes);
+        }
+        for (const [name, removed] of [
+          ["without-other.exe", [Other]],
+          ["without-both.exe", [Extra, Other]],
+        ] as const) {
+          trimExecutable(executable, join(folder, name), [...removed]);
+          expectSoundPe({ folder, table, removed: [...removed], retainedAddresses, trimmedName: name });
+          expectFoldedState(program, join(folder, name), [...removed]);
+          if (originalCodes) expect(await exitCodes(name)).toEqual(removed.length === 2 ? [70, 70] : originalCodes);
+        }
+      },
+    );
+  }
 
   test("a guard in the copy of an inline function the linker dropped does not stop the cut", async () => {
     using dir = tempDir("trim-coff-inline-guard", inlineGuardFiles);

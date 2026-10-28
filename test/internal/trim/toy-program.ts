@@ -296,6 +296,39 @@ export function embedderSource(
     "}",
     "#endif",
     "",
+    ...(format === "coff" && options?.exit === undefined
+      ? [
+          String.raw`
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+// The persisted range layout, alignment and default limit are AOTRemovableFeature.h's.
+typedef struct { long long start; unsigned size; unsigned short feature, reserved; } ToyRemovedRange;
+static LONG CALLBACK toyRemovedFeature(EXCEPTION_POINTERS *exception) {
+    const RemovableFeatureState *state = &Bun__removableFeatureState;
+    if (!state->isTrimmed || !state->removedRangeCount || state->removedRangeCount > 32768 || state->removedRangesOffset % 8)
+        return EXCEPTION_CONTINUE_SEARCH;
+    const EXCEPTION_RECORD *record = exception->ExceptionRecord;
+    if (record->ExceptionCode != EXCEPTION_BREAKPOINT && record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION &&
+        record->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION)
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (record->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+        (record->NumberParameters < 2 || record->ExceptionInformation[1] != (ULONG_PTR)record->ExceptionAddress))
+        return EXCEPTION_CONTINUE_SEARCH;
+    const ToyRemovedRange *ranges = (const ToyRemovedRange *)((ULONG_PTR)state + (ULONG_PTR)state->removedRangesOffset);
+    const unsigned long long offset = (ULONG_PTR)record->ExceptionAddress - (ULONG_PTR)state;
+    for (unsigned i = 0; i < state->removedRangeCount; ++i)
+        if (offset - (unsigned long long)ranges[i].start < ranges[i].size && ranges[i].feature < sizeof(state->removal))
+            Bun__abortForRemovedFeature(ranges[i].feature);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+// Bun's runtime translates entry into removed code; the standalone toy embedder must do the same.
+__attribute__((constructor)) static void toyInstallRemovedFeatureHandler(void) {
+    if (!AddVectoredExceptionHandler(1, toyRemovedFeature)) _exit(71);
+}
+`,
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -317,7 +350,7 @@ static NEVER_INLINE EncodedJSValue JSC_HOST_CALL_ATTRIBUTES called(JSGlobalObjec
 static NEVER_INLINE EncodedJSValue JSC_HOST_CALL_ATTRIBUTES listed(JSGlobalObject*, CallFrame*) { return feature_code(7) | 1; }
 static NEVER_INLINE EncodedJSValue JSC_HOST_CALL_ATTRIBUTES defined(JSGlobalObject*, CallFrame*) { JSC_REMOVABLE_HOST_FUNCTION_DEFINITION(Atomics, defined); return feature_code(5) | 1; }
 static NEVER_INLINE int operation(int x) { return feature_code(x) | 1; }   static int replacement(int) { return -1; }
-extern "C" int body(int x) { JSC_BEGIN_REMOVABLE_ENTRY_POINT(Atomics, ReturnDefault, int) if (x < 0) return 7; return feature_code(x) | 1; JSC_END_REMOVABLE_ENTRY_POINT }
+extern "C" NEVER_INLINE int body(int x) { JSC_BEGIN_REMOVABLE_ENTRY_POINT(Atomics, ReturnDefault, int) if (x < 0) return 7; return feature_code(x) | 1; JSC_END_REMOVABLE_ENTRY_POINT }
 static HostFunction volatile table[] = { listed };
 static uint16_t featureOfReplacedFunction;
 static EncodedJSValue JSC_HOST_CALL_ATTRIBUTES throwsInstead(JSGlobalObject* realm, CallFrame*) { return Bun__throwForRemovedFeature(realm, featureOfReplacedFunction); }
