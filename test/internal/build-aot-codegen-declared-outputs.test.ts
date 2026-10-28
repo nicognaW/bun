@@ -119,29 +119,16 @@ function sourceLists(lists: Partial<Sources>): Sources {
 
 /**
  * The outputs of the `build` line in `n` that produces `output`, spelled as in
- * build.ninja (buildDir-relative), sorted. Ninja.build() also declares every
- * build-dir output under its absolute path (so depfile entries resolve to the
- * edge); those aliases are checked to be exactly the relative set and dropped.
+ * build.ninja (buildDir-relative where possible), sorted. Ninja.build() also
+ * declares relative outputs under their absolute paths for depfiles. An output
+ * on another Windows drive is already absolute and needs no alias.
  */
 function edgeOutputs(n: Ninja, output: string): string[] {
-  const lines = n
-    .toString()
-    .replace(/ \$\n +/g, " ")
-    .split("\n");
-  for (const line of lines) {
-    if (!line.startsWith("build ")) continue;
-    const outputs = line
-      .slice("build ".length, line.search(/(?<!\$): /))
-      .split(/(?<!\$) /)
-      .filter(token => token !== "|");
-    if (!outputs.includes(n.rel(output))) continue;
-    const unescaped = outputs.map(o => o.replaceAll("$:", ":"));
-    const relative = unescaped.filter(o => !isAbsolute(o)).sort();
-    const aliases = unescaped.filter(o => isAbsolute(o)).sort();
-    expect(aliases).toEqual(relative.map(o => resolve(n.buildDir, o)).sort());
-    return relative;
-  }
-  throw new Error(`no build edge produces ${output}`);
+  const edge = readManifest(n.toString()).edges.find(edge => edge.outputs.includes(n.rel(output)));
+  if (edge === undefined) throw new Error(`no build edge produces ${output}`);
+  const relative = edge.outputs.filter(path => !isAbsolute(path));
+  expect(edge.implicitOutputs.sort()).toEqual(relative.map(path => resolve(n.buildDir, path)).sort());
+  return edge.outputs.sort();
 }
 
 /** The edge in `n` that produces `output`, read back from the text of build.ninja. */
@@ -358,15 +345,22 @@ describe("emitBuiltinsTable", () => {
   ];
 
   test("declares the three Rust tables, the C++ files, the four data files and the engine's files on one edge", () => {
-    using dir = tempDir("build-aot-builtins-table", {});
-    const { cfg, n, o, dirStamp } = configure(String(dir));
+    using dir = tempDir("build-aot-builtins-table", {
+      checkout: {
+        "Cargo.toml": '[package]\nname = "test_crate"\nversion = "0.0.0"\n',
+        "schema with spaces.bind.ts": "",
+      },
+    });
+    const { cfg: base, n, o, dirStamp } = configure(String(dir));
+    const cfg = { ...base, cwd: resolve(String(dir), "checkout") };
+    const schema = resolve(cfg.cwd, "schema with spaces.bind.ts");
     const script = resolve(cfg.cwd, "src", "codegen", "builtins", "index.ts");
     const prelude = resolve(cfg.cwd, "src", "aot", "prelude", "map-set.ts");
 
     emitBuiltinsTable({
       n,
       cfg,
-      sources: noSources({ builtinsTableCodegen: [script], aotPrelude: [prelude] }),
+      sources: noSources({ bindgen: [schema], builtinsTableCodegen: [script], aotPrelude: [prelude] }),
       o,
       dirStamp,
       engine: checkout,
@@ -392,6 +386,7 @@ describe("emitBuiltinsTable", () => {
       expect.arrayContaining(
         [
           prelude,
+          schema,
           ...checkout.schemaInputs,
           ...checkout.builtinTableInputs,
           resolve(cfg.cwd, "src", "jsc", "bindings", "ZigGlobalObject.lut.txt"),
@@ -400,6 +395,9 @@ describe("emitBuiltinsTable", () => {
     );
     expect(inputs.filter(input => input === n.rel(script))).toHaveLength(1);
     expect(edgeArgs(n, cpp)).toContain(`--javascriptcore=${checkout.javaScriptCore}`);
+    expect(edgeArgs(n, cpp)).toContain(
+      quote("--sources=test_crate=schema with spaces.bind.ts", cfg.host.os === "windows"),
+    );
     expect(edgeArgs(n, cpp)).not.toContain("--prebuilt-generated");
   });
 

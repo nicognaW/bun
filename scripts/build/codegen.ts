@@ -930,6 +930,10 @@ function isCompiled(cfg: CodegenFields, src: string): boolean {
   return cfg.debug || cfg.assertions || !src.endsWith("_test.bind.ts");
 }
 
+export function bindgenSourcesFlag(cfg: CodegenFields, sources: Sources): string {
+  return `--sources=${sources.bindgen.map(src => `${crateOf(src)}=${relative(cfg.cwd, src)}`).join(",")}`;
+}
+
 export function typesOnlyFlag(cfg: CodegenFields, sources: Sources): string {
   return `--types-only=${sources.bindgen
     .filter(src => !isCompiled(cfg, src))
@@ -973,7 +977,7 @@ export function emitBindgen({ n, cfg, sources, o, dirStamp, engine }: Ctx): void
       args: shJoin(cfg, [
         script,
         // Every schema: build/types is shared by every profile, so Bindgen.d.ts describes them all.
-        `--sources=${sources.bindgen.map(src => `${crates.get(src)}=${src}`).join(",")}`,
+        bindgenSourcesFlag(cfg, sources),
         typesOnlyFlag(cfg, sources),
         `--codegen-path=${cfg.codegenDir}`,
         `--types-path=${cfg.typesDir}`,

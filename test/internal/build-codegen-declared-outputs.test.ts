@@ -15,14 +15,14 @@
  * writes when run for real into a scratch dir.
  */
 import { describe, expect, test } from "bun:test";
-import { bunExe, bunRun, tempDir } from "harness";
-import { readdirSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { bunEnv, bunExe, bunRun, isWindows, tempDir } from "harness";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 import { emitBindgen, registerCodegenRules, type CodegenOutputs } from "../../scripts/build/codegen.ts";
 import { registerDirStamps } from "../../scripts/build/compile.ts";
 import { resolveConfig, type Config, type Toolchain } from "../../scripts/build/config.ts";
-import { Ninja } from "../../scripts/build/ninja.ts";
+import { Ninja, readManifest } from "../../scripts/build/ninja.ts";
 import { quote } from "../../scripts/build/shell.ts";
 import type { Sources } from "../../scripts/glob-sources.ts";
 
@@ -108,29 +108,16 @@ function sourceLists(lists: Partial<Sources>): Sources {
 
 /**
  * The outputs of the `build` line in `n` that produces `output`, spelled as in
- * build.ninja (buildDir-relative), sorted. Ninja.build() also declares every
- * build-dir output under its absolute path (so depfile entries resolve to the
- * edge); those aliases are checked to be exactly the relative set and dropped.
+ * build.ninja (buildDir-relative where possible), sorted. Ninja.build() also
+ * declares relative outputs under their absolute paths for depfiles. An output
+ * on another Windows drive is already absolute and needs no alias.
  */
 function edgeOutputs(n: Ninja, output: string): string[] {
-  const lines = n
-    .toString()
-    .replace(/ \$\n +/g, " ")
-    .split("\n");
-  for (const line of lines) {
-    if (!line.startsWith("build ")) continue;
-    const outputs = line
-      .slice("build ".length, line.search(/(?<!\$): /))
-      .split(/(?<!\$) /)
-      .filter(token => token !== "|");
-    if (!outputs.includes(n.rel(output))) continue;
-    const unescaped = outputs.map(o => o.replaceAll("$:", ":"));
-    const relative = unescaped.filter(o => !isAbsolute(o)).sort();
-    const aliases = unescaped.filter(o => isAbsolute(o)).sort();
-    expect(aliases).toEqual(relative.map(o => resolve(n.buildDir, o)).sort());
-    return relative;
-  }
-  throw new Error(`no build edge produces ${output}`);
+  const edge = readManifest(n.toString()).edges.find(edge => edge.outputs.includes(n.rel(output)));
+  if (edge === undefined) throw new Error(`no build edge produces ${output}`);
+  const relative = edge.outputs.filter(path => !isAbsolute(path));
+  expect(edge.implicitOutputs.sort()).toEqual(relative.map(path => resolve(n.buildDir, path)).sort());
+  return edge.outputs.sort();
 }
 
 /** `names` in the codegen dir, spelled as in build.ninja, sorted. */
@@ -158,6 +145,70 @@ function repoBindFiles(cfg: Config): string[] {
 const generatorTimeout = 60_000;
 
 describe("emitBindgen", () => {
+  test
+    .skipIf(!isWindows)
+    .concurrent("passes source paths through cmd from a long checkout containing spaces", async () => {
+      const checkoutName = "checkout with spaces " + "long-".repeat(12);
+      using dir = tempDir("build-codegen-command", {
+        [checkoutName]: {
+          "Cargo.toml": '[package]\nname = "bun"\nversion = "0.0.0"\n',
+          src: {
+            codegen: {
+              "bindgen.ts": `
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+const args = Object.fromEntries(process.argv.slice(2).map(arg => {
+  const at = arg.indexOf("=");
+  return [arg.slice(2, at), arg.slice(at + 1)];
+}));
+const sources = args.sources.split(",").map(pair => {
+  const path = pair.slice(pair.indexOf("=") + 1);
+  return { path: resolve(path), text: readFileSync(path, "utf8") };
+});
+mkdirSync(args["codegen-path"], { recursive: true });
+writeFileSync(join(args["codegen-path"], "arguments.json"), JSON.stringify({ cwd: process.cwd(), sources, types: args["types-path"] }));
+`,
+            },
+          },
+        },
+      });
+      const c = configure(resolve(String(dir), "generated files"));
+      const checkout = resolve(String(dir), checkoutName);
+      const cfg = { ...c.cfg, cwd: checkout, typesDir: resolve(String(dir), "types with spaces") };
+      const names = [
+        ...repoBindFiles(c.cfg).map(path => relative(c.cfg.cwd, path)),
+        "src/runtime/schema with spaces.bind.ts",
+      ];
+      const bindgen = names.map(name => resolve(checkout, name));
+      expect(bindgen.reduce((length, path) => length + path.length, 0)).toBeGreaterThan(8191);
+      for (let i = 0; i < bindgen.length; i++) {
+        mkdirSync(dirname(bindgen[i]!), { recursive: true });
+        writeFileSync(bindgen[i]!, `// ${names[i]}`);
+      }
+      emitBindgen({ ...c, cfg, sources: sourceLists({ bindgen, bindgenCodegen: [] }) });
+      const manifest = c.n.toString();
+      const edge = readManifest(manifest).edges.find(edge => edge.rule === "codegen")!;
+      const recipe = /^rule codegen\n  command = (.*)$/m.exec(manifest.replace(/ \$\n +/g, " "))![1];
+      const command = recipe.replace(/\$(cwd|args)\b/g, (_, name) => edge.bindings[name]!);
+      expect(command).toStartWith("cmd /c ");
+      await using proc = Bun.spawn(["cmd.exe", "/c", command.slice("cmd /c ".length)], {
+        cwd: c.cfg.cwd,
+        env: bunEnv,
+        windowsVerbatimArguments: true,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      expect(stdout).toBe("");
+      expect(stderr).toBe("");
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(resolve(cfg.codegenDir, "arguments.json"), "utf8"))).toEqual({
+        cwd: checkout,
+        sources: bindgen.map((path, i) => ({ path, text: `// ${names[i]}` })),
+        types: cfg.typesDir,
+      });
+    });
+
   test("declares a .cpp and a .h per .bind.ts, the tables, a .rs per crate and the .d.ts, on one edge", () => {
     using dir = tempDir("build-codegen-bindgen", {});
     const c = configure(String(dir));
