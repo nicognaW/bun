@@ -898,6 +898,29 @@ export const api = { f1 };
     });
   });
 
+  // The message about `load.nope` prints the type of `load`, whose return type is being inferred, and then the call asks for
+  // its argument once more. Nothing of that evaluation is stored, so the walk evaluates the argument again.
+  test.each([
+    ["a function", "function load() { return [api.nope, cached]; }", ["a.ts(3,10)", "a.ts(3,31)", "a.ts(4,28)"]],
+    [
+      "an async function",
+      "async function load() { return [api.nope, cached]; }",
+      ["a.ts(3,16)", "a.ts(3,37)", "a.ts(4,28)"],
+    ],
+  ])("reports a missing property once if its message prints the type of %s in a ring", async (_, load, places) => {
+    using dir = project({
+      "a.ts": `declare function same<T>(value: T): T;
+declare const api: { load: typeof load };
+${load}
+var cached = same(api.load.nope);
+export {};
+`,
+    });
+    const { stdout, exitCode } = await check(dir, ["--threads", "1"]);
+    expect(stdout.split("\n").map(line => line.slice(0, line.indexOf(":")))).toEqual(places);
+    expect(exitCode).toBe(1);
+  });
+
   // `f1` and `f2` report errors whose messages print a type, so `f3`'s return type is inferred two messages deep, where
   // TypeScript discards errors. It caches the expression of a `return` statement without its parentheses, so the walk checks
   // a parenthesized one again and reports. An expression body is checked again too.
@@ -6940,6 +6963,34 @@ const wrong: number = "";
             exitCode: 1,
           },
         ]).toContainEqual({ stdout, stderr: stderr.split("\n")[0], exitCode });
+      },
+      // Longer than the child's own timeout, so the child never outlives the test.
+      20_000,
+    );
+
+    // The return type of each function is found through the next. Up to some length the ring closes on the stack, and every
+    // member is reported. A longer one is resolved piece by piece from lower on the stack, and closes at the member that
+    // waits for the pieces. Where that length is depends on the platform and the build, so this tries many.
+    test.skipIf(isDebug || isASAN).each([3_000, 3_600, 3_800, 4_000, 5_000, 8_000, 20_000])(
+      "finishes within 10 s on a ring of %d functions that don't say what they return",
+      async length => {
+        const ring = Array.from(
+          { length },
+          (_, index) => `function f${index}(x: number) { return x > 0 ? f${(index + 1) % length}(x - 1) + 1 : 0; }\n`,
+        );
+        using dir = project({
+          "a.ts": `${ring.join("")}export const wrong: number = "";\nexport const any: string = f0(1);\n`,
+        });
+        const { stdout, stderr, exitCode } = await check(dir, ["--all"], {}, 10_000);
+        const lines = stdout.split("\n");
+        const circular = lines.filter(line => line.includes("error TS7023:"));
+        expect(lines.filter(line => !line.includes("error TS7023:"))).toEqual([
+          `a.ts(${length + 1},14): error TS2322: Type 'string' is not assignable to type 'number'.`,
+        ]);
+        const isWhole = !stderr.startsWith("error: ran out of stack in a.ts.");
+        expect(circular.length).toBeGreaterThan(0);
+        if (isWhole) expect(circular).toHaveLength(length);
+        expect(exitCode).toBe(1);
       },
       // Longer than the child's own timeout, so the child never outlives the test.
       20_000,

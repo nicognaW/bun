@@ -87,6 +87,8 @@ const testsOfHardenedBun = [
   "aot/hardened-personality",
   "aot/hardened-start",
 ];
+/** Every test of these skips itself on any system but Windows. */
+const testsOfWindows = ["aot/the-table-of-section-headers-has-room-on-windows"];
 /** These skip themselves when they are run whole. CI runs them as units of test/aot/parts.mts. */
 export const testsThatComeInParts = [
   "aot/backend/backend.test",
@@ -102,6 +104,7 @@ export const testsThatComeInParts = [
 /** These read the engine's sources, which no test machine has. .github/workflows/lint.yml runs them. */
 export const testsOfEngineSources = [
   "aot/a-switch-of-the-compiler-names-every-enumerator.test",
+  "aot/any-two-sources-of-the-compiler-can-share-a-translation-unit.test",
   "aot/emitters-append-in-the-order-written.test",
   "aot/engine-types-are-defined-once.test",
   "aot/every-field-of-flows-results-is-written-and-read.test",
@@ -110,6 +113,7 @@ export const testsOfEngineSources = [
   "aot/lists-of-operations-in-the-compiler-only-shrink.test",
   "aot/one-text-of-the-engine-reads-what-a-descriptor-literal-says.test",
   "aot/the-compiler-reads-no-environment-variable.test",
+  "aot/the-compiler-sorts-with-its-own-sort.test",
   "aot/the-frame-of-an-operation-outlives-whoever-is-handed-its-address.test",
   "aot/the-value-under-a-chain-of-casts-is-only-asked-about.test",
   "aot/what-is-only-expected-of-a-position-is-widened-in-one-place.test",
@@ -139,10 +143,11 @@ export function getAotTestsOfLane(
   return (os === "darwin" && arch === "x64") || (os === "windows" && arch === "aarch64") ? "a tenth" : "all";
 }
 
-export function getAotExcludes({ arch, distro, profile }: AotLane, aot: AotTests): string[] {
+export function getAotExcludes({ os, arch, distro, profile }: AotLane, aot: AotTests): string[] {
   const groups = aot === "a tenth" ? fullRunAotGroups : linuxX64AotGroups;
   const runNothing = [
     ...testsOfHardenedBun,
+    ...(os === "windows" ? [] : testsOfWindows),
     ...testsThatComeInParts,
     ...testsOfEngineSources,
     ...Object.keys(testsOutsideCi),
@@ -181,6 +186,9 @@ export function getAotAlwaysDrawn(
     "aot/without-executable-memory",
     // Each system has its own way to take a wish for an address.
     "aot/every-launch-places-its-heap-anew",
+    // Each system has its own way to tell a process its time zone, and its own folders above a temporary one.
+    "aot/time-zone-at-start",
+    "aot/plain-bun-installs-no-packages",
     // Only on this CPU is the reach of a call within the size of a large program.
     ...(arch === "aarch64" ? ["aot/calls-beyond-their-reach"] : []),
     // Only a file system that ignores the case of letters can tell it from any other resolution.
@@ -202,25 +210,36 @@ export function getAotAlwaysDrawn(
 // The tests whose next result on a system is waited for. The lanes of that system run them on every commit, whatever they draw. An entry is taken out when the result is in.
 export const testsAwaitedOn: Record<string, string[]> = {
   windows: [
-    "aot/a-descriptor-that-is-written-out-is-no-object-whatever-it-describes-a-property-of",
-    "aot/an-operation-without-a-value-stops-the-build",
-    "aot/code-nested-in-itself",
+    "aot/a-build-that-stops-says-where",
+    "aot/a-field-that-holds-undefined-outside-the-cell-fails-no-test",
+    "aot/a-file-under-another-tsconfig-imports-from-a-file-that-a-plugin-answers-for",
+    "aot/a-loop-that-calls-nothing-is-terminated",
+    "aot/a-shadow-realm-in-a-trimmed-executable",
+    "aot/asking-about-a-class-keeps-none-of-its-code",
+    "aot/build-plugins-answer-javascript-for-typescript",
+    "aot/bun-plugin-in-a-trimmed-executable",
+    "aot/bundler-in-a-trimmed-executable",
+    "aot/development-server-in-a-trimmed-executable",
     "aot/engine-tests-ir",
-    "aot/every-program-28.",
-    "aot/every-program-3.",
-    "aot/every-program-alone-82.",
+    "aot/engine-tests-native",
+    "aot/evaluated-code-in-a-trimmed-executable",
+    "aot/every-program-alone-39.",
+    "aot/every-program-alone-60.",
+    "aot/in-place-executables.",
+    "aot/keys-of-process-in-a-trimmed-executable",
+    "aot/members-of-bun-ffi-in-a-trimmed-executable",
     "aot/minifying-first-saves-no-code-12.",
-    "aot/pointers-into-what-a-cell-owns",
-    "aot/programs-in-every-run-18.",
-    "aot/programs-in-every-run-29.",
-    "aot/programs-in-every-run-31.",
-    "aot/programs-in-every-run-37.",
-    "aot/programs-in-every-run-46.",
-    "aot/programs-in-every-run-49.",
-    "aot/programs-in-every-run-59.",
-    "aot/workers-from-embedded-files",
-    "aot/workers-from-texts-that-the-build-knows",
-    "aot/workers-named-by-relative-texts",
+    "aot/names-from-run-time-in-a-trimmed-executable",
+    "aot/one-line-changes-little-1.",
+    "aot/programs-in-every-run-25.",
+    "aot/programs-in-every-run-27.",
+    "aot/programs-in-every-run-33.",
+    "aot/source-of-the-runtime-modules-for-workers-of-unseen-code",
+    "aot/the-runner-of-workers-writes-its-line-into-a-stream-that-a-worker-has-filled",
+    "aot/trim-keeps-locale-methods-only-where-they-are-named",
+    "aot/worker-of-text-in-a-trimmed-executable",
+    "aot/worker-terminated-in-its-error-listener",
+    "bundler/compile-trim-remove",
   ],
 };
 
@@ -230,13 +249,11 @@ export function getAotAlwaysInDrawnStep({ os, profile }: AotLane, aot: AotTests)
     ...(testsAwaitedOn[os] ?? []),
     // A mark for this lane alone can only be found stale on this lane.
     ...(aot === "all" ? ["aot/programs-marked-as-failing"] : []),
-    // Each system has its own way to tell a process its time zone, and its own folders above a temporary one. They go to the other step once they have been green here.
-    "aot/time-zone-at-start",
-    "aot/plain-bun-installs-no-packages",
     // They go to the other step once they have been green here.
     ...(profile === "asan" ? testsWithSanitizer : []),
-    // One test of the first is for this system, and the file system ignores the case of letters. They go to the other step once they have been green here.
-    ...(os === "windows" ? ["aot/engine-tests.test", "aot/resolver/file-name-case"] : []),
+    // One test of the first is for this system, the file system ignores the case of letters, and the third reads a table that only executables of this system have.
+    // They go to the other step once they have been green here.
+    ...(os === "windows" ? ["aot/engine-tests.test", "aot/resolver/file-name-case", ...testsOfWindows] : []),
   ];
 }
 
@@ -265,6 +282,7 @@ export function getAotStepArguments(
   if (draw === 1 && lane.arch === "x64") args.push(...aotTests.map(group => `--must-run=${group}`));
   else if (lane.profile === "asan" && takes === "drawn")
     args.push(...testsWithSanitizer.map(group => `--must-run=${group}`));
+  else if (lane.os === "windows" && takes === "drawn") args.push(...testsOfWindows.map(group => `--must-run=${group}`));
   return args;
 }
 

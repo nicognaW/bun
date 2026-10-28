@@ -3186,6 +3186,21 @@
   "aot/generated-births-and-uses-of-one-use-of-two-kinds-of-value-1.test.ts": {
     "default": 51166
   },
+  "aot/generated-births-and-uses-of-one-use-of-two-kinds-of-value-10.test.ts": {
+    "default": 51166
+  },
+  "aot/generated-births-and-uses-of-one-use-of-two-kinds-of-value-11.test.ts": {
+    "default": 51166
+  },
+  "aot/generated-births-and-uses-of-one-use-of-two-kinds-of-value-12.test.ts": {
+    "default": 51166
+  },
+  "aot/generated-births-and-uses-of-one-use-of-two-kinds-of-value-13.test.ts": {
+    "default": 51166
+  },
+  "aot/generated-births-and-uses-of-one-use-of-two-kinds-of-value-14.test.ts": {
+    "default": 51166
+  },
   "aot/generated-births-and-uses-of-one-use-of-two-kinds-of-value-2.test.ts": {
     "default": 51166
   },
@@ -3780,6 +3795,9 @@
     "default": 3276,
     "windows": 4292
   },
+  "aot/generated-objects-and-the-prototypes-they-really-have.test.ts": {
+    "default": 120
+  },
   "aot/generated-objects-born-in-every-place.test.ts": {
     "default": 3898,
     "windows": 5749
@@ -3789,6 +3807,9 @@
   },
   "aot/generated-objects-read-where-they-are-made.test.ts": {
     "default": 300
+  },
+  "aot/generated-objects-that-a-call-in-a-loop-is-the-first-to-ask-for.test.ts": {
+    "default": 15000
   },
   "aot/generated-objects-that-live-for-one-turn-of-a-loop.test.ts": {
     "default": 300
@@ -6103,6 +6124,18 @@
   },
   "aot/perf/pinned-everyday-idioms-4.test.ts": {
     "default": 62750
+  },
+  "aot/perf/pinned-everyday-idioms-5.test.ts": {
+    "default": 62000
+  },
+  "aot/perf/pinned-everyday-idioms-6.test.ts": {
+    "default": 62000
+  },
+  "aot/perf/pinned-everyday-idioms-7.test.ts": {
+    "default": 62000
+  },
+  "aot/perf/pinned-everyday-idioms-8.test.ts": {
+    "default": 62000
   },
   "aot/perf/plain-bun-costs.test.ts": {
     "default": 156000

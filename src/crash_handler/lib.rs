@@ -1870,12 +1870,13 @@ mod draft {
                 return;
             }
             REPORTS_ABORTS.store(true, Ordering::Relaxed);
-            // SAFETY: the handler has the signature that `signal` calls and is never unloaded.
+            // SAFETY: the handlers have the signatures that `signal` and the engine call and are never unloaded.
             unsafe {
                 libc::signal(
                     libc::SIGABRT,
                     handle_abort_windows as extern "C" fn(core::ffi::c_int) as usize,
                 );
+                WTFSetAbortReporter(Some(report_abort_windows));
             }
         }
     }
@@ -2111,6 +2112,7 @@ mod draft {
                 bun_sys::windows::kernel32::SetUnhandledExceptionFilter(None);
                 if REPORTS_ABORTS.swap(false, Ordering::Relaxed) {
                     libc::signal(libc::SIGABRT, libc::SIG_DFL);
+                    WTFSetAbortReporter(None);
                 }
             }
             return;
@@ -2285,6 +2287,18 @@ mod draft {
                 handle_abort_windows as extern "C" fn(core::ffi::c_int) as usize,
             );
         }
+        report_abort_windows()
+    }
+
+    #[cfg(windows)]
+    unsafe extern "C" {
+        fn WTFSetAbortReporter(reporter: Option<extern "C" fn()>);
+    }
+
+    /// An assertion of the engine that fails calls this in front of `abort()`: between the C runtime's reset and the
+    /// first statement of `handle_abort_windows` the `abort()` of a second thread ends the process.
+    #[cfg(windows)]
+    extern "C" fn report_abort_windows() {
         bun_core::debug::with_current_context(|pc, context| {
             crash_handler(CrashReason::Abort, TraceSeed::Fault { pc, fp: context })
         })
@@ -2721,54 +2735,35 @@ mod draft {
                     let header_ref = unsafe { &*header };
                     // SAFETY: load commands follow the mach header in memory; the
                     // dyld-mapped image stays live for the process lifetime.
-                    let it = bun_sys::macho::LoadCommandIterator::new(header_ref.ncmds, unsafe {
+                    let commands = unsafe {
                         core::slice::from_raw_parts(
                             header
                                 .cast::<u8>()
                                 .add(core::mem::size_of::<bun_sys::macho::mach_header_64>()),
                             header_ref.sizeofcmds as usize,
                         )
-                    });
+                    };
 
-                    for cmd in it {
-                        match cmd.cmd() {
-                            bun_sys::macho::LC_SEGMENT_64 => {
-                                let segment_cmd =
-                                    cmd.cast::<bun_sys::macho::segment_command_64>().unwrap();
-                                if segment_cmd.seg_name() != b"__TEXT" {
-                                    continue;
-                                }
-
-                                let original_address = address - vmaddr_slide;
-                                let seg_start = segment_cmd.vmaddr as usize;
-                                let seg_end = seg_start + segment_cmd.vmsize as usize;
-                                if original_address >= seg_start && original_address < seg_end {
-                                    // Subtract ASLR value for stable address
-                                    let stable_address: usize = address - vmaddr_slide;
-
-                                    if i == 0 {
-                                        let image_relative_address = stable_address - seg_start;
-                                        if image_relative_address > i32::MAX as usize {
-                                            return None;
-                                        }
-
-                                        // To remap this, you have to add the offset (which is going to be 0x100000000),
-                                        // and then you can run it through `llvm-symbolizer --obj bun-with-symbols 0x123456`
-                                        // The reason we are subtracting this known offset is mostly just so that we can
-                                        // fit it within a signed 32-bit integer. The VLQs will be shorter too.
-                                        return Some(StackLine {
-                                            object: None,
-                                            address: i32::try_from(image_relative_address)
-                                                .expect("int cast"),
-                                        });
-                                    } else {
-                                        // these libraries are not interesting, mark as unknown
-                                        return None;
-                                    }
-                                }
-                            }
-                            _ => {}
+                    // Subtract ASLR value for stable address
+                    let stable_address: usize = address - vmaddr_slide;
+                    if let Some(image_relative_address) = bun_sys::macho::offset_in_code(
+                        header_ref.ncmds,
+                        commands,
+                        stable_address as u64,
+                    ) {
+                        if i != 0 {
+                            // these libraries are not interesting, mark as unknown
+                            return None;
                         }
+
+                        // To remap this, you have to add the offset (which is going to be 0x100000000),
+                        // and then you can run it through `llvm-symbolizer --obj bun-with-symbols 0x123456`
+                        // The reason we are subtracting this known offset is mostly just so that we can
+                        // fit it within a signed 32-bit integer. The VLQs will be shorter too.
+                        return Some(StackLine {
+                            object: None,
+                            address: i32::try_from(image_relative_address).ok()?,
+                        });
                     }
                     i += 1;
                 }

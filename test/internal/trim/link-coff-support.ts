@@ -56,6 +56,8 @@ export interface LinkOptions {
   linkFlags?: string[];
   libraryPaths?: string[];
   archives?: Record<string, string[]>;
+  /** The objects that went into the archives stay where they were compiled to. */
+  keepsArchivedObjects?: boolean;
   inputs?: string[];
   minimums?: Record<FeatureName, number>;
   builtins?: BuiltinEntry[];
@@ -106,7 +108,7 @@ async function prepareInputs(folder: string, options: LinkOptions, pathOf: (name
     const memberNames = members.map(name => relative(archiveFolder, `${name}.obj`));
     const archiveResult = await run([tools["llvm-lib"]!, "/nologo", `/out:${basename(archive)}`, ...memberNames], join(folder, archiveFolder));
     expect(archiveResult.exitCode).toBe(0);
-    for (const name of members) rmSync(join(folder, `${name}.obj`));
+    if (!options.keepsArchivedObjects) for (const name of members) rmSync(join(folder, `${name}.obj`));
   }
   const archived = Object.values(archives).flat();
   const linkedObjects = objects.filter(name => !archived.includes(name)).map(name => pathOf(`${name}.obj`));

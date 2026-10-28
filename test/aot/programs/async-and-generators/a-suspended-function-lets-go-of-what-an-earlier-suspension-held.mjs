@@ -3,14 +3,33 @@
 // Plain Bun prints another output.
 let last;
 let sink = 0;
+let overwritten = 1;
 function make(n) {
   const made = { n };
   last = new WeakRef(made);
   return made;
 }
+// A collection reads the stack word by word. Its own frames, and those of the event loop that calls the program again, lie where earlier calls have left theirs.
+function overwriteStack(depth, a) {
+  if (depth === 0) return a;
+  const b = a + 1;
+  const c = b * 2;
+  const d = c - a;
+  const e = d + b;
+  const f = e * 3;
+  const g = f - c;
+  const h = g + d;
+  const i = h * 5;
+  const j = i - e;
+  const k = j + f;
+  const l = k * 7;
+  const m = l - g;
+  return (overwriteStack(depth - 1, m % 1000) + b + c + d + e + f + g + h + i + j + k + l) % 1000;
+}
 async function pause(label) {
   for (let round = 0; round < 4; round++) {
     await new Promise(resolve => setTimeout(resolve, 1));
+    overwritten = overwriteStack(200, overwritten);
     Bun.gc(true);
   }
   console.log(label + ":", last.deref() !== undefined ? "kept" : "collected");
@@ -27,7 +46,11 @@ async function localReadBetween(n) {
   await pause("a local read between two suspensions");
   return 1;
 }
-for (let n = 0; n < 1; n++) await localReadBetween(n);
+for (let n = 0; n < 1; n++) {
+  const waiting = localReadBetween(n);
+  overwritten = overwriteStack(200, overwritten);
+  await waiting;
+}
 async function localReadBetweenThenCleared(n) {
   let x = make(n);
   await pauseWithoutAsking();
@@ -36,7 +59,11 @@ async function localReadBetweenThenCleared(n) {
   await pause("a local read between two suspensions, then cleared");
   return 1;
 }
-for (let n = 0; n < 1; n++) await localReadBetweenThenCleared(n);
+for (let n = 0; n < 1; n++) {
+  const waiting = localReadBetweenThenCleared(n);
+  overwritten = overwriteStack(200, overwritten);
+  await waiting;
+}
 async function sharedReadBetween(n) {
   const x = make(n);
   const late = () => x.n;
@@ -45,7 +72,11 @@ async function sharedReadBetween(n) {
   await pause("a shared name, a name of the module read between two suspensions");
   return 1;
 }
-for (let n = 0; n < 1; n++) await sharedReadBetween(n);
+for (let n = 0; n < 1; n++) {
+  const waiting = sharedReadBetween(n);
+  overwritten = overwriteStack(200, overwritten);
+  await waiting;
+}
 async function blockLeftBetween(n) {
   {
     const x = make(n);
@@ -56,7 +87,11 @@ async function blockLeftBetween(n) {
   await p;
   return 1;
 }
-for (let n = 0; n < 1; n++) await blockLeftBetween(n);
+for (let n = 0; n < 1; n++) {
+  const waiting = blockLeftBetween(n);
+  overwritten = overwriteStack(200, overwritten);
+  await waiting;
+}
 function* stepsLocal(n) {
   const x = make(n);
   yield 1;
@@ -68,6 +103,7 @@ for (let n = 0; n < 1; n++) {
   const walker = stepsLocal(n);
   walker.next();
   walker.next();
+  overwritten = overwriteStack(200, overwritten);
   await pause("a local of a generator read between two yields");
   walker.next();
 }
@@ -79,5 +115,9 @@ async function waitsForAnArrowFunction(n) {
   })();
   return 1;
 }
-for (let n = 0; n < 1; n++) await waitsForAnArrowFunction(n);
-console.log("sum", typeof sink);
+for (let n = 0; n < 1; n++) {
+  const waiting = waitsForAnArrowFunction(n);
+  overwritten = overwriteStack(200, overwritten);
+  await waiting;
+}
+console.log("sum", typeof (sink + overwritten));
