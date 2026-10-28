@@ -2268,7 +2268,7 @@ async function spawnBunTest(
   if (crashes) stdoutPreview += crashes;
   if (ok && mustRunATest(testPath) && !/^ *[1-9]\d* (?:pass|fail|todo)$/m.test(stripAnsi(stdout))) {
     ok = false;
-    error = "no test ran: scripts/aot-tests.ts lists the tests that run nothing in this step";
+    error = "no test ran: --must-run requires at least one executed test in this file";
   }
 
   // If we generated a JUnit file and we're on BuildKite, upload it immediately

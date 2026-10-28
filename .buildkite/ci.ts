@@ -1060,6 +1060,10 @@ function getTestBunStep(platform: Platform, options: PipelineOptions, testOption
     args.push("--exclude=internal/source-lints");
   }
 
+  if (os === "windows" && platform.arch === "x64" && !aot && !hardened) {
+    args.push("--must-run=internal/trim/link-coff.test.ts");
+  }
+
   const depends: string[] = [];
   if (!buildId) {
     depends.push(buildKey);

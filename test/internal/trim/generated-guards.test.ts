@@ -1,13 +1,13 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { bunEnv, bunExe, tempDir } from "harness";
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
 import { readBuiltinUses } from "../../../scripts/build/trim/builtin-uses.ts";
 import type { BuiltinEntry, BuiltinKind } from "../../../scripts/build/trim/types.ts";
 import { Guards, textOfStaticTableEntry } from "../../../src/codegen/builtins/guards.ts";
 import { removableFeatures } from "../../../src/codegen/removable-entry-points.ts";
-import { builtinUsesPath, builtinUsesSkipReason, skipNotice } from "./toy-program.ts";
+import { builtinUsesPath, builtinUsesSkipReason, findBuiltinUses, skipNotice } from "./toy-program.ts";
 
 setDefaultTimeout(60_000);
 
@@ -105,6 +105,36 @@ describe("Guards", () => {
     expect(modules.ofPath("bun:removable")).toBeNull();
     expect(modules.ofModule("bun:other")).toBeNull();
   });
+});
+
+test("finds trim metadata paired with Bun before other build profiles", () => {
+  using dir = tempDir("trim-builtin-uses-discovery", {
+    override: { "builtin-uses.json": "invalid explicit metadata" },
+    artifact: {
+      "builtin-uses.json": "artifact",
+      codegen: { "builtin-uses.json": "local build" },
+    },
+    build: { other: { codegen: { "builtin-uses.json": "other profile" } } },
+  });
+  const root = String(dir);
+  const executable = join(root, "artifact", "bun.exe");
+  const builds = join(root, "build");
+  const override = join(root, "override");
+  const overridden = findBuiltinUses(executable, override, builds);
+  expect(overridden).toBe(join(override, "builtin-uses.json"));
+  expect(() => readBuiltinUses(overridden!)).toThrow(SyntaxError);
+
+  const artifact = join(root, "artifact", "builtin-uses.json");
+  expect(findBuiltinUses(executable, undefined, builds)).toBe(artifact);
+  expect(findBuiltinUses(executable, join(root, "missing override"), builds)).toBe(artifact);
+  unlinkSync(artifact);
+  const local = join(root, "artifact", "codegen", "builtin-uses.json");
+  expect(findBuiltinUses(executable, undefined, builds)).toBe(local);
+  unlinkSync(local);
+  const other = join(builds, "other", "codegen", "builtin-uses.json");
+  expect(findBuiltinUses(executable, undefined, builds)).toBe(other);
+  unlinkSync(other);
+  expect(findBuiltinUses(executable, undefined, builds)).toBeUndefined();
 });
 
 if (builtinUsesSkipReason !== undefined) skipNotice("generated-guards.test.ts", builtinUsesSkipReason);

@@ -2,7 +2,7 @@ import { readTrimTable } from "bun:internal-for-testing";
 import { expect } from "bun:test";
 import { bunEnv, bunExe, isWindows } from "harness";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { sharedCacheDir } from "../../../scripts/build/config.ts";
 import { prebuiltDirPrefix, WEBKIT_VERSION } from "../../../scripts/build/deps/webkit.ts";
 import { serializeBuiltinUses } from "../../../scripts/build/trim/builtin-uses.ts";
@@ -42,6 +42,14 @@ export interface GuardHeader {
   includes: string[];
 }
 
+function guardHeaderFromInclude(include: string): GuardHeader | undefined {
+  const folder = join(include, "JavaScriptCore");
+  const path = join(folder, "AOTRemovableFeature.h");
+  const featureListPath = join(folder, "AOTBuiltinFeatures.h");
+  if (existsSync(path) && existsSync(featureListPath))
+    return { path, featureListPath, includes: [`-I${folder}`, `-I${include}`] };
+}
+
 function findGuardHeader(): GuardHeader | undefined {
   const checkouts = [process.env.BUN_WEBKIT_PATH, join(repositoryRoot, "vendor", "WebKit")];
   for (const checkout of checkouts) {
@@ -60,6 +68,13 @@ function findGuardHeader(): GuardHeader | undefined {
       };
     }
   }
+  const bundledInclude = join(dirname(bunExe()), "aot-engine", "trim-include");
+  if (existsSync(bundledInclude)) {
+    const bundled = guardHeaderFromInclude(bundledInclude);
+    if (bundled === undefined)
+      throw new Error(`Incomplete WebKit trimming headers in ${bundledInclude}: AOTRemovableFeature.h or AOTBuiltinFeatures.h is missing`);
+    return bundled;
+  }
   const buildFolder = join(repositoryRoot, "build");
   const caches = [
     sharedCacheDir(repositoryRoot),
@@ -69,12 +84,8 @@ function findGuardHeader(): GuardHeader | undefined {
   for (const cache of caches) {
     for (const name of childrenOf(cache)) {
       if (!name.startsWith(prefix)) continue;
-      const include = join(cache, name, "include");
-      const folder = join(include, "JavaScriptCore");
-      const path = join(folder, "AOTRemovableFeature.h");
-      const featureListPath = join(folder, "AOTBuiltinFeatures.h");
-      if (existsSync(path) && existsSync(featureListPath))
-        return { path, featureListPath, includes: [`-I${folder}`, `-I${include}`] };
+      const header = guardHeaderFromInclude(join(cache, name, "include"));
+      if (header !== undefined) return header;
     }
   }
   return undefined;
@@ -83,13 +94,18 @@ function findGuardHeader(): GuardHeader | undefined {
 export const guardHeader: GuardHeader | undefined = findGuardHeader();
 export const guardHeaderSkipReason: string | undefined =
   guardHeader === undefined
-    ? "there is no AOTRemovableFeature.h: not under $BUN_WEBKIT_PATH, vendor/WebKit or a build's cache of the prebuilt WebKit"
+    ? "there is no AOTRemovableFeature.h: not beside Bun in aot-engine/trim-include, under $BUN_WEBKIT_PATH, vendor/WebKit or a build's cache of the prebuilt WebKit"
     : undefined;
 
-function findBuiltinUses(): string | undefined {
-  const buildFolder = join(repositoryRoot, "build");
+export function findBuiltinUses(
+  executable: string,
+  codegenFolder: string | undefined,
+  buildFolder: string,
+): string | undefined {
   const codegenFolders = [
-    process.env.BUN_CODEGEN_DIR,
+    codegenFolder,
+    dirname(executable),
+    join(dirname(executable), "codegen"),
     ...childrenOf(buildFolder).map(profile => join(buildFolder, profile, "codegen")),
   ];
   return codegenFolders
@@ -97,10 +113,14 @@ function findBuiltinUses(): string | undefined {
     .find(path => existsSync(path));
 }
 
-export const builtinUsesPath: string | undefined = findBuiltinUses();
+export const builtinUsesPath: string | undefined = findBuiltinUses(
+  bunExe(),
+  process.env.BUN_CODEGEN_DIR,
+  join(repositoryRoot, "build"),
+);
 export const builtinUsesSkipReason: string | undefined =
   builtinUsesPath === undefined
-    ? "there is no builtin-uses.json: not under $BUN_CODEGEN_DIR or the codegen folder of a build"
+    ? "there is no builtin-uses.json: not under $BUN_CODEGEN_DIR, beside Bun or in the codegen folder of a build"
     : undefined;
 
 const skipNotices = new Set<string>();

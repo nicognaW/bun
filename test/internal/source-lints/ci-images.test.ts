@@ -10,6 +10,7 @@ import {
   hashFiles,
   imageKey,
   images,
+  locations,
   macosMachines,
   pins,
   recordedTool,
@@ -65,6 +66,20 @@ function recordSection(image: (typeof images)[number], root: string, tool = "rec
   const end = lines.findIndex((line, index) => index > start && line.startsWith("# ---- "));
   return lines.slice(start, end < 0 ? undefined : end).filter(line => line !== "");
 }
+
+test("Windows LLVM includes the MSVC demangler from the full release", () => {
+  using dir = tempDir("ci-images-windows-llvm", {});
+  for (const image of images.filter(image => image.os === "windows")) {
+    const cpu = image.arch === "x64" ? "x86_64" : "aarch64";
+    const root = `clang+llvm-${pins.llvm.version}-${cpu}-pc-windows-msvc`;
+    const section = recordSection(image, String(dir), "llvm").join("\n");
+    expect(section).toContain(`${root}.tar.xz`);
+    expect(section).toContain(pins.llvm.windowsSha256[image.arch]);
+    expect(section).toContain(`${locations.windowsLlvm}\\${root}\\bin\\llvm-undname.exe`);
+    expect(section).toContain("BUN_TOOLCHAIN_LLVM");
+    expect(section).toContain("--version");
+  }
+});
 
 test("a tool's line of the record, for each kind of identity", () => {
   const image = images.find(image => image.os === "linux" && image.role === "build")!;

@@ -9,8 +9,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import { bunExe, bunRun, tempDir } from "harness";
-import { existsSync, readdirSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 import {
   builtinTableRust,
@@ -29,9 +29,11 @@ import {
   schemaUseCheckStamp,
   type EngineSources,
 } from "../../scripts/build/aot.ts";
+import { aotTrimMetadata, stageAotEngine, stageAotTrimHeaders } from "../../scripts/build/ci.ts";
 import { registerCodegenRules, type CodegenOutputs } from "../../scripts/build/codegen.ts";
 import { registerDirStamps } from "../../scripts/build/compile.ts";
 import { resolveConfig, type Config, type Toolchain } from "../../scripts/build/config.ts";
+import { webkitAotFile, webkitTrimHeaders } from "../../scripts/build/deps/webkit.ts";
 import { Ninja, readManifest, type ManifestEdge } from "../../scripts/build/ninja.ts";
 import { quote } from "../../scripts/build/shell.ts";
 import type { Sources } from "../../scripts/glob-sources.ts";
@@ -243,6 +245,218 @@ describe("emitRemovableFeatures", () => {
     },
     generatorTimeout,
   );
+});
+
+describe("AOT trimming metadata in CI artifacts", () => {
+  for (const aot of [true, false]) {
+    test(`selects the configured codegen metadata when aot=${aot}`, () => {
+      using dir = tempDir("aot-artifact-metadata", {
+        "target codegen": { "builtin-uses.json": '{"target":"configured"}' },
+        "host codegen": { "builtin-uses.json": '{"target":"other"}' },
+      });
+      const cfg = { ...configure(String(dir)).cfg, aot, codegenDir: resolve(String(dir), "target codegen") };
+      const selected = aotTrimMetadata(cfg);
+      if (aot) {
+        expect(selected).toBe(resolve(cfg.codegenDir, "builtin-uses.json"));
+        expect(readFileSync(selected!, "utf8")).toBe('{"target":"configured"}');
+      } else {
+        expect(selected).toBeUndefined();
+      }
+    });
+
+    test(`requires metadata only when aot=${aot}`, () => {
+      using dir = tempDir("aot-artifact-metadata-missing", {});
+      const cfg = { ...configure(String(dir)).cfg, aot };
+      if (aot) {
+        expect(() => aotTrimMetadata(cfg)).toThrow(JSON.stringify(builtinUsesJson(cfg)));
+      } else {
+        expect(aotTrimMetadata(cfg)).toBeUndefined();
+      }
+    });
+  }
+});
+
+describe("AOT headers in CI artifacts", () => {
+  function inputsFor(folder: string, webkit: "local" | "prebuilt") {
+    const { cfg } = configure(resolve(folder, "build"));
+    return {
+      ...cfg,
+      webkit,
+      cacheDir: resolve(folder, "cache"),
+      webkitVersion: "0123456789abcdef0123456789abcdef01234567",
+      localDeps: { WebKit: resolve(folder, "custom checkout") },
+    };
+  }
+
+  function writeInputs(inputs: ReturnType<typeof webkitTrimHeaders>) {
+    for (const [name, path] of Object.entries(inputs)) {
+      if (name === "wtf") continue;
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, name);
+    }
+    for (const name of ["Platform.h", "Compiler.h", "ThreadSafetyAnalysis.h", "glib/GTypedefs.h", "unused.cpp"]) {
+      const path = join(inputs.wtf, name);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, name);
+    }
+  }
+
+  function engineConfig(folder: string, aot: boolean): Config {
+    return resolveConfig(
+      {
+        os: "linux",
+        arch: "x64",
+        abi: "gnu",
+        buildType: "Release",
+        lto: true,
+        asan: false,
+        aot,
+        buildDir: resolve(folder, "build"),
+        cacheDir: resolve(folder, "cache"),
+        linuxSysroot: folder,
+        webkitVersion: "0123456789abcdef0123456789abcdef01234567",
+      },
+      mockToolchain(),
+    );
+  }
+
+  for (const aot of [true, false]) {
+    test(`stages available engine generators when aot=${aot}`, () => {
+      using dir = tempDir("ci-engine-generators", {});
+      const cfg = engineConfig(String(dir), aot);
+      const source = webkitAotFile(cfg, "directory");
+      const names = ["builtins/generator/index.ts", "ir/generator/index.ts", "ir/schema/entry.ts", "ir/AOTSchema.def"];
+      for (const name of names) {
+        const file = join(source, name);
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, name);
+      }
+      const compiledWith = webkitAotFile(cfg, "builtins-generated");
+      mkdirSync(compiledWith, { recursive: true });
+      writeFileSync(join(compiledWith, "AOTBuiltinFeatures.h"), "compiled feature indices");
+      writeFileSync(join(compiledWith, "ignored.h"), "not a generated builtin");
+      if (aot) writeInputs(webkitTrimHeaders(cfg));
+      const staged = resolve(cfg.buildDir, "aot-engine");
+      mkdirSync(join(staged, "trim-include"), { recursive: true });
+      writeFileSync(join(staged, "trim-include", "stale.h"), "old profile");
+
+      expect(stageAotEngine(cfg)).toBe(staged);
+      for (const name of names) expect(readFileSync(join(staged, name), "utf8")).toBe(name);
+      expect(readFileSync(join(staged, "builtins/generated/AOTBuiltinFeatures.h"), "utf8")).toBe(
+        "compiled feature indices",
+      );
+      expect(existsSync(join(staged, "builtins/generated/ignored.h"))).toBe(false);
+      expect(existsSync(join(staged, "trim-include/stale.h"))).toBe(false);
+      expect(existsSync(join(staged, "trim-include"))).toBe(aot);
+    });
+
+    test(`requires engine generators only when aot=${aot}`, () => {
+      using dir = tempDir("ci-engine-generators-missing", {});
+      const cfg = engineConfig(String(dir), aot);
+      if (aot) {
+        expect(() => stageAotEngine(cfg)).toThrow(
+          JSON.stringify(join(webkitAotFile(cfg, "directory"), "builtins/generator")),
+        );
+      } else {
+        expect(stageAotEngine(cfg)).toBeUndefined();
+      }
+      expect(existsSync(resolve(cfg.buildDir, "aot-engine"))).toBe(false);
+    });
+  }
+
+  test.each(["local", "prebuilt"] as const)(
+    "stages the configured %s headers and generated feature indices",
+    webkit => {
+      using dir = tempDir("aot-artifact-headers", {});
+      const cfg = inputsFor(String(dir), webkit);
+      const inputs = webkitTrimHeaders(cfg);
+      if (webkit === "local") {
+        const checkout = cfg.localDeps.WebKit!;
+        expect(inputs).toEqual({
+          "JavaScriptCore/AOTRemovableFeature.h": resolve(
+            checkout,
+            "Source/JavaScriptCore/aot/runtime/AOTRemovableFeature.h",
+          ),
+          "JavaScriptCore/AOTThreshold.h": resolve(checkout, "Source/JavaScriptCore/aot/support/AOTThreshold.h"),
+          "JavaScriptCore/AOTBuiltinFeatures.h": resolve(
+            cfg.buildDir,
+            "deps/WebKit/JavaScriptCore/DerivedSources/aot/AOTBuiltinFeatures.h",
+          ),
+          "JavaScriptCore/AOTBuiltinTableGuards.h": resolve(
+            checkout,
+            "Source/JavaScriptCore/aot/builtins/AOTBuiltinTableGuards.h",
+          ),
+          wtf: resolve(checkout, "Source/WTF/wtf"),
+        });
+      } else {
+        const include = resolve(cfg.cacheDir, "webkit-0123456789abcdef-debug-asan-aot/include");
+        expect(inputs).toEqual({
+          "JavaScriptCore/AOTRemovableFeature.h": resolve(include, "JavaScriptCore/AOTRemovableFeature.h"),
+          "JavaScriptCore/AOTThreshold.h": resolve(include, "JavaScriptCore/AOTThreshold.h"),
+          "JavaScriptCore/AOTBuiltinFeatures.h": resolve(include, "JavaScriptCore/AOTBuiltinFeatures.h"),
+          "JavaScriptCore/AOTBuiltinTableGuards.h": resolve(include, "JavaScriptCore/AOTBuiltinTableGuards.h"),
+          wtf: resolve(include, "wtf"),
+        });
+      }
+      writeInputs(inputs);
+      const engine = resolve(String(dir), "artifact/aot-engine");
+      stageAotTrimHeaders(cfg, engine);
+      for (const name of Object.keys(inputs).filter(name => name !== "wtf"))
+        expect(readFileSync(join(engine, "trim-include", name), "utf8")).toBe(name);
+      expect(readFileSync(join(engine, "trim-include/wtf/glib/GTypedefs.h"), "utf8")).toBe("glib/GTypedefs.h");
+      expect(existsSync(join(engine, "trim-include/wtf/unused.cpp"))).toBe(false);
+    },
+  );
+
+  test.each([
+    { arch: "x64", suffix: "-windows-lto-aot" },
+    { arch: "aarch64", suffix: "-windows-arm64-aot" },
+  ] as const)("uses the Windows $arch cross-build cache key", ({ arch, suffix }) => {
+    using dir = tempDir("aot-cross-artifact-headers", {});
+    const resolved = resolveConfig(
+      {
+        os: "windows",
+        arch,
+        buildType: "Release",
+        asan: false,
+        cacheDir: resolve(String(dir), "cache"),
+        buildDir: resolve(String(dir), "build"),
+        winsysroot: resolve(String(dir), "windows sysroot"),
+        webkitVersion: "0123456789abcdef0123456789abcdef01234567",
+      },
+      mockToolchain(),
+    );
+    const cfg = { ...resolved, host: { ...resolved.host, os: "linux" as const, arch: "aarch64" as const } };
+    const include = resolve(cfg.cacheDir, `webkit-0123456789abcdef${suffix}/include`);
+    const inputs = webkitTrimHeaders(cfg);
+    for (const [name, path] of Object.entries(inputs)) expect(path).toBe(resolve(include, name));
+    writeInputs(inputs);
+    const engine = resolve(String(dir), "artifact/aot-engine");
+    stageAotTrimHeaders(cfg, engine);
+    expect(readFileSync(join(engine, "trim-include/JavaScriptCore/AOTBuiltinFeatures.h"), "utf8")).toBe(
+      "JavaScriptCore/AOTBuiltinFeatures.h",
+    );
+  });
+
+  test.each([
+    "JavaScriptCore/AOTRemovableFeature.h",
+    "JavaScriptCore/AOTThreshold.h",
+    "JavaScriptCore/AOTBuiltinFeatures.h",
+    "JavaScriptCore/AOTBuiltinTableGuards.h",
+    "wtf/Platform.h",
+  ])("fails packaging before copying when %s is missing", missing => {
+    using dir = tempDir("aot-artifact-missing-header", {});
+    const cfg = inputsFor(String(dir), "prebuilt");
+    const inputs = webkitTrimHeaders(cfg);
+    writeInputs(inputs);
+    const source = missing.startsWith("wtf/")
+      ? join(inputs.wtf, missing.slice(4))
+      : inputs[missing as keyof typeof inputs];
+    rmSync(source);
+    const engine = resolve(String(dir), "artifact/aot-engine");
+    expect(() => stageAotTrimHeaders(cfg, engine)).toThrow(JSON.stringify(source));
+    expect(existsSync(join(engine, "trim-include"))).toBe(false);
+  });
 });
 
 describe("emitAotSchema", () => {

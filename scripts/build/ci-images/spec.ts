@@ -70,8 +70,9 @@ export const locations = {
   /** `bun install`'s cache, filled while the image is baked. */
   installCache: { linux: "/var/cache/bun-install", windows: "C:\\bun-install-cache" },
   rust: { linux: "/opt/rust", darwin: "/opt/rust", windows: "C:\\Program Files\\Rust" },
-  /** Debian and Ubuntu. Everywhere else a package manager places LLVM. */
+  /** Debian and Ubuntu. */
   llvm: "/opt/llvm",
+  windowsLlvm: "C:\\Program Files\\LLVM",
   bunNinja: { linux: "/opt/bun-ninja", darwin: "/opt/bun-ninja", windows: "C:\\Program Files\\bun-ninja" },
   /** Dependency sources for scripts/build/download.ts, fetched while the image is baked. */
   prefetch: { linux: "/opt/bun-prefetch", windows: "C:\\bun-prefetch" },
@@ -175,6 +176,11 @@ export const pins = {
   },
   llvm: {
     version: "23.1.1",
+    // GitHub's full clang+llvm-<version>-<arch>-pc-windows-msvc.tar.xz releases.
+    windowsSha256: {
+      x64: "c54ac8146b420fe72e11e6fdd56498d6818011ad23267196b6ab37b5ac9264c3",
+      aarch64: "c8cd61f6624accf0d0f9f4519ddcc97745c6a865205bb43f364b6aaf9c50a31e",
+    },
     // GitHub's, of LLVM-<version>-Linux-X64.tar.xz and -ARM64.tar.xz.
     sha256: {
       x64: "832aeb58d105de1cabc7b982dd2c65de0610f7377df48ae8fc2dd8e97420a15c",
@@ -1016,7 +1022,7 @@ function cmake(image: LinuxImage): Tool {
 
 /**
  * clang, lld and the LLVM tools: the exact release on Debian and Ubuntu, from
- * LLVM's own build of it, and on Windows, from Scoop. LLVM has no build for
+ * LLVM's own build of it, and on Windows, from the full LLVM release. LLVM has no build for
  * musl or for an Intel Mac, and neither Alpine nor Homebrew can be asked for a
  * patch release, only for a major; scripts/build/tools.ts is what decides
  * whether the compiler it finds is close enough to the pin.
@@ -1025,10 +1031,23 @@ function llvm(image: Image): Tool {
   const { version } = pins.llvm;
   const major = llvmMajor;
   if (image.os === "windows") {
+    // The MSI omits llvm-undname, which COFF trim analysis needs.
+    const root = `clang+llvm-${version}-${cpuName[image.arch]}-pc-windows-msvc`;
+    const directory = `${locations.windowsLlvm}\\${root}`;
     return {
       name: "llvm",
       identity: pinned(version),
-      steps: [scoopInstall(`${image.arch === "x64" ? "llvm" : "llvm-arm64"}@${version}`)],
+      steps: [
+        ...unpackedArchive({
+          url: `https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/${root}.tar.xz`,
+          sha256: pins.llvm.windowsSha256[image.arch],
+          file: `llvm-${image.arch}.tar.xz`,
+          into: locations.windowsLlvm,
+        }),
+        setEnvironment("BUN_TOOLCHAIN_LLVM", directory),
+        addToPath(`${directory}\\bin`),
+        run(`${directory}\\bin\\llvm-undname.exe`, "--version"),
+      ],
     };
   }
   if (image.os === "darwin") {

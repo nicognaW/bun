@@ -176,6 +176,29 @@ export function webkitAotFile(cfg: Config, name: WebKitAotFile): string {
   }
 }
 
+/** Headers that the native trim fixtures need, paired with the configured engine. */
+export function webkitTrimHeaders(cfg: Config) {
+  if (cfg.webkit === "prebuilt") {
+    const include = join(prebuiltDestDir(cfg), "include");
+    return {
+      "JavaScriptCore/AOTRemovableFeature.h": join(include, "JavaScriptCore", "AOTRemovableFeature.h"),
+      "JavaScriptCore/AOTThreshold.h": join(include, "JavaScriptCore", "AOTThreshold.h"),
+      "JavaScriptCore/AOTBuiltinFeatures.h": join(include, "JavaScriptCore", "AOTBuiltinFeatures.h"),
+      "JavaScriptCore/AOTBuiltinTableGuards.h": join(include, "JavaScriptCore", "AOTBuiltinTableGuards.h"),
+      wtf: join(include, "wtf"),
+    };
+  }
+  const wk = webkitLayout(cfg);
+  const aot = join(wk.JSC, "aot");
+  return {
+    "JavaScriptCore/AOTRemovableFeature.h": join(aot, "runtime", "AOTRemovableFeature.h"),
+    "JavaScriptCore/AOTThreshold.h": join(aot, "support", "AOTThreshold.h"),
+    "JavaScriptCore/AOTBuiltinFeatures.h": join(aotGeneratedDirectory(wk), "AOTBuiltinFeatures.h"),
+    "JavaScriptCore/AOTBuiltinTableGuards.h": join(aot, "builtins", "AOTBuiltinTableGuards.h"),
+    wtf: join(wk.WTF, "wtf"),
+  };
+}
+
 const engineDeclarations = "AOTBuiltinEngineDeclarations.json";
 
 /** What Bun's code generators read and write in the engine (../aot.ts). With the prebuilt, one file stands for each folder: the fetch edge extracts all of the tarball. */

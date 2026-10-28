@@ -23,9 +23,16 @@ import { basename, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isBuildkite, markBuildkiteStepReported, reportAnnotationToBuildkite } from "../buildkite.ts";
 import { formatAnnotationToHtml, parseAnnotations } from "./annotations.ts";
+import { builtinUsesJson } from "./aot.ts";
 import { bunExeName, shouldStrip, type BunOutput } from "./bun.ts";
 import type { Config } from "./config.ts";
-import { webkitAotFile, webkitJSCPath, webkitTestAotPath, webkitTestFFIPath } from "./deps/webkit.ts";
+import {
+  webkitAotFile,
+  webkitJSCPath,
+  webkitTestAotPath,
+  webkitTestFFIPath,
+  webkitTrimHeaders,
+} from "./deps/webkit.ts";
 import { BuildError } from "./error.ts";
 import { crossFeaturesJson } from "./features-json.ts";
 import { linkerMapOutputs, orderFilePath, usesOrderFile } from "./flags.ts";
@@ -259,7 +266,7 @@ const TIMINGS_META_DATA = "timings:";
 //           ├── jsc[.exe]                (WebKit's shell, with this bun's table of built-ins where the tarball has its objects)
 //           ├── testaot[.exe]            (the engine's AoT test program, likewise)
 //           ├── aot-tests/               (its IR tests: WebKit's Source/JavaScriptCore/aot/tests)
-//           ├── aot-engine/              (the engine's generators and its schema, for the tests that import them)
+//           ├── aot-engine/              (the engine's generators, schema and trim fixture headers)
 //           ├── aot_builtin_table.json   (the table of built-ins this Bun was built with: test/aot/generate.ts writes programs from it)
 //           ├── features.json
 //           ├── bun-profile.linker-map   (linkerMapOutputs: release, non-asan)
@@ -362,26 +369,10 @@ export function packageAndUpload(cfg: Config, output: BunOutput): void {
     cpSync(engineTests, staged, { recursive: true });
     files.push("aot-tests");
   }
-  // What src/codegen/engine-directory.ts looks for: tests import the generators, which are files of the engine.
-  const engineDirectory = webkitAotFile(cfg, "directory");
-  if (existsSync(join(engineDirectory, "builtins", "generator"))) {
-    const staged = resolve(buildDir, "aot-engine");
-    rmSync(staged, { recursive: true, force: true });
-    for (const part of [
-      ["builtins", "generator"],
-      ["ir", "generator"],
-      ["ir", "schema"],
-      ["ir", "AOTSchema.def"],
-    ]) {
-      cpSync(join(engineDirectory, ...part), join(staged, ...part), { recursive: true });
-    }
-    // What the engine was compiled with, where a prebuilt WebKit has it.
-    const compiledWith = webkitAotFile(cfg, "builtins-generated");
-    for (const name of readdirSync(compiledWith).filter(name => name.startsWith("AOTBuiltin"))) {
-      cpSync(join(compiledWith, name), join(staged, "builtins", "generated", name));
-    }
-    files.push("aot-engine");
-  }
+  const engine = stageAotEngine(cfg);
+  if (engine !== undefined) files.push(engine);
+  const trimMetadata = aotTrimMetadata(cfg);
+  if (trimMetadata !== undefined) files.push(trimMetadata);
   const builtinTable = resolve(cfg.codegenDir, "aot_builtin_table.json");
   if (existsSync(builtinTable)) files.push(builtinTable);
   // Debug symbols / linker map — platform-specific extras.
@@ -415,6 +406,67 @@ export function packageAndUpload(cfg: Config, output: BunOutput): void {
   // ─── Upload ───
   console.log(`Uploading ${zipPaths.length} zips...`);
   upload(zipPaths, buildDir);
+}
+
+export function stageAotEngine(cfg: Config): string | undefined {
+  const source = webkitAotFile(cfg, "directory");
+  const generators = join(source, "builtins", "generator");
+  if (!existsSync(generators)) {
+    if (!cfg.aot) return undefined;
+    throw new BuildError(`Cannot package the AOT engine: ${JSON.stringify(generators)} does not exist`, {
+      hint: "Build the configured WebKit before packaging CI artifacts",
+    });
+  }
+  // Source-generation tests also use these files in builds without the AOT compiler.
+  const staged = resolve(cfg.buildDir, "aot-engine");
+  rmSync(staged, { recursive: true, force: true });
+  for (const part of [
+    ["builtins", "generator"],
+    ["ir", "generator"],
+    ["ir", "schema"],
+    ["ir", "AOTSchema.def"],
+  ]) {
+    cpSync(join(source, ...part), join(staged, ...part), { recursive: true });
+  }
+  const compiledWith = webkitAotFile(cfg, "builtins-generated");
+  for (const name of readdirSync(compiledWith).filter(name => name.startsWith("AOTBuiltin"))) {
+    cpSync(join(compiledWith, name), join(staged, "builtins", "generated", name));
+  }
+  if (cfg.aot) stageAotTrimHeaders(cfg, staged);
+  return staged;
+}
+
+export function aotTrimMetadata(cfg: Config): string | undefined {
+  if (!cfg.aot) return undefined;
+  const source = builtinUsesJson(cfg);
+  if (!existsSync(source)) {
+    throw new BuildError(`Cannot package AOT trimming metadata: ${JSON.stringify(source)} does not exist`, {
+      hint: "Build the configured AOT codegen before packaging CI artifacts",
+    });
+  }
+  return source;
+}
+
+export function stageAotTrimHeaders(cfg: Config, engineDirectory: string): void {
+  const inputs = webkitTrimHeaders(cfg);
+  for (const source of [
+    ...Object.values(inputs),
+    ...["Platform.h", "Compiler.h", "ThreadSafetyAnalysis.h"].map(name => join(inputs.wtf, name)),
+  ]) {
+    if (!existsSync(source)) {
+      throw new BuildError(`Cannot package WebKit trimming headers: ${JSON.stringify(source)} does not exist`, {
+        hint: "Build the configured WebKit before packaging CI artifacts",
+      });
+    }
+  }
+  const include = join(engineDirectory, "trim-include");
+  mkdirSync(include, { recursive: true });
+  for (const [name, source] of Object.entries(inputs)) {
+    cpSync(source, join(include, name), {
+      recursive: true,
+      filter: path => statSync(path).isDirectory() || path.endsWith(".h"),
+    });
+  }
 }
 
 /**
