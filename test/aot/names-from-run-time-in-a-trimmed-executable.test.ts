@@ -108,8 +108,8 @@ if (!canTrim)
     "SKIPPED: names-from-run-time-in-a-trimmed-executable.test.ts: this build of Bun doesn't support --trim",
   );
 
-(canTrim && !unsupported && !isWindows ? describe : describe.skip)("in a trimmed executable", () => {
-  test(
+(canTrim && !unsupported ? describe : describe.skip)("in a trimmed executable", () => {
+  test.skipIf(isWindows)(
     "every name that text from run time reads is what it is in the whole executable",
     () =>
       slot(async () => {
@@ -128,7 +128,7 @@ if (!canTrim)
     600_000,
   );
 
-  test(
+  test.skipIf(isWindows && process.arch !== "x64")(
     "a function that stays and would come to what is removed throws",
     () =>
       slot(async () => {
@@ -158,7 +158,7 @@ if (!canTrim)
     600_000,
   );
 
-  test(
+  test.skipIf(isWindows)(
     "a function that is called by a name from run time returns or throws, and the program goes on",
     () =>
       slot(async () => {

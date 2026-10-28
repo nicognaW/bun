@@ -1084,6 +1084,18 @@ function linkImplicitInputs(cfg: Config): string[] {
  * time instead of cryptic build failures later.
  */
 export function validateBunConfig(cfg: Config): void {
+  if (cfg.trimmable && cfg.windows) {
+    const hint =
+      cfg.host.os === "windows"
+        ? "Use the full Windows clang+llvm archive from the LLVM release, not the MSI (which omits llvm-undname), and point BUN_TOOLCHAIN_LLVM at its root."
+        : "Install llvm-undname beside llvm-cxxfilt in the LLVM toolchain used by this build.";
+    const cxxfilt = cfg.cxxfilt;
+    assert(cxxfilt !== undefined, "A trimmable COFF build requires llvm-cxxfilt and llvm-undname", { hint });
+    // Demangler in trim/report.ts uses this sibling for Microsoft ABI names.
+    const undname = cxxfilt.replace(/llvm-cxxfilt(?=[^/\\]*$)/, "llvm-undname");
+    assert(existsSync(undname), `A trimmable COFF build requires ${undname}`, { hint });
+  }
+
   // build.ninja encodes both absolute -I/-D paths derived from cfg.cwd and
   // buildDir-relative source paths (../../src/...). If buildDir is reached
   // through a symlink that escapes this checkout — e.g. a sibling worktree

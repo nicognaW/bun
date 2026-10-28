@@ -1503,7 +1503,7 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
       !asan &&
       !valgrind &&
       linksWithLld({ darwin, crossTarget }) &&
-      host.os !== "windows",
+      (host.os !== "windows" || (host.arch === "x64" && windows && x64)),
     aot: partial.aot ?? true,
     relr: partial.relr ?? false,
     pgoGenerate,

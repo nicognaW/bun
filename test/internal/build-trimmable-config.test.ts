@@ -3,9 +3,11 @@
  * link the map scripts/build/trim/link.ts reads. Configure-time logic only: no compiler and no download.
  */
 import { describe, expect, test } from "bun:test";
-import { bunEnv, bunExe, isMacOS, isWindows } from "harness";
+import { bunEnv, bunExe, isMacOS, isWindows, tempDir } from "harness";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { validateBunConfig } from "../../scripts/build/bun.ts";
 import {
   formatConfig,
   linksWithLld,
@@ -60,6 +62,59 @@ function mockToolchain(overrides: Partial<Toolchain> = {}): Toolchain {
 
 const resolve = (partial: PartialConfig): Config =>
   resolveConfig({ buildType: "Release", trimmable: true, ...partial }, mockToolchain());
+
+describe.skipIf(!isWindows)("Windows-host trimmable targets", () => {
+  test.each([
+    { os: "windows", arch: "x64", expected: process.arch === "x64" },
+    { os: "windows", arch: "aarch64", expected: false },
+    { ...linux, expected: false },
+    { ...freebsd, expected: false },
+  ] satisfies (PartialConfig & { expected: boolean })[])(
+    "$os-$arch has eligibility $expected",
+    ({ expected, ...target }) => {
+      using dir = tempDir("trimmable-host-target", {});
+      const cfg = resolve({ ...target, buildDir: String(dir) });
+      expect(cfg.trimmable).toBe(expected);
+    },
+  );
+});
+
+describe.skipIf(!isWindows || process.arch !== "x64")("native Windows x64 trimmable build config", () => {
+  test("an opted-in release writes the maps needed by the COFF reader", () => {
+    using dir = tempDir("trimmable-native-config", {});
+    const native: PartialConfig = { os: "windows", arch: "x64", buildDir: String(dir) };
+    const cfg = resolve(native);
+    expect(cfg.trimmable).toBe(true);
+    expect(linksWithLld(cfg)).toBe(true);
+    expect(writesLinkerMap(cfg)).toBe(true);
+    expect(linkerMapOutputs(cfg).length).toBeGreaterThan(0);
+    expect(resolve({ ...native, trimmable: false }).trimmable).toBe(false);
+    expect(resolve({ ...native, buildType: "Debug", asan: false }).trimmable).toBe(false);
+  });
+
+  test("requires llvm-cxxfilt for a trimmable COFF build", () => {
+    using dir = tempDir("trimmable-no-demangler", {});
+    const cfg = resolveConfig(
+      { os: "windows", arch: "x64", buildType: "Release", trimmable: true, buildDir: join(String(dir), "build") },
+      mockToolchain({ cxxfilt: undefined }),
+    );
+    expect(() => validateBunConfig(cfg)).toThrow("llvm-cxxfilt");
+    expect(() => validateBunConfig({ ...cfg, trimmable: false })).not.toThrow();
+  });
+
+  test("requires llvm-undname beside llvm-cxxfilt before starting the build", () => {
+    using dir = tempDir("trimmable-msvc-demangler", {});
+    const cxxfilt = join(String(dir), "llvm-cxxfilt.exe");
+    writeFileSync(cxxfilt, "");
+    const cfg = resolveConfig(
+      { os: "windows", arch: "x64", buildType: "Release", trimmable: true, buildDir: join(String(dir), "build") },
+      mockToolchain({ cxxfilt }),
+    );
+    expect(() => validateBunConfig(cfg)).toThrow("llvm-undname");
+    writeFileSync(join(String(dir), "llvm-undname.exe"), "");
+    expect(() => validateBunConfig(cfg)).not.toThrow();
+  });
+});
 
 async function build(...args: string[]): Promise<{ stderr: string; exitCode: number }> {
   await using proc = Bun.spawn({

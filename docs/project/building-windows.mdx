@@ -105,6 +105,22 @@ A successful build writes `bun-debug.exe` to the `build/debug` folder.
 
 Add this folder to `$Env:PATH`: open the Start menu, type "Path", and use the environment variables menu to add `C:\.....\bun\build\debug` to the user environment variable `PATH`. Then restart your editor (if it still does not pick up the change, log out and log back in).
 
+### Experimental trimmable releases
+
+Native Windows trimmable builds are currently enabled for x64 hosts targeting Windows x64.
+
+A release built with `--trimmable=on` needs `llvm-undname.exe` beside `llvm-cxxfilt.exe` to analyze Microsoft C++ symbols. The LLVM Windows MSI, including the package installed by Scoop, does not include `llvm-undname`.
+
+For x64, download the [full LLVM 23.1.1 Windows archive](https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.1/clang%2Bllvm-23.1.1-x86_64-pc-windows-msvc.tar.zst) and extract it beside your Bun checkout. From the checkout, select that LLVM installation:
+
+```ps1
+$Env:BUN_TOOLCHAIN_LLVM = (Resolve-Path "..\clang+llvm-23.1.1-x86_64-pc-windows-msvc").Path
+& "$Env:BUN_TOOLCHAIN_LLVM\bin\llvm-undname.exe" --version
+bun run build:release -j4 --trimmable=on
+```
+
+The build checks for the required demangler before starting compilation. Trimming is experimental; building this configuration does not by itself qualify every AOT program or target architecture.
+
 ## Extra paths
 
 - The build extracts WebKit to `$Env:BUN_INSTALL\build-cache\webkit-<version>-debug-aot` (`webkit-<version>-arm64-debug-aot` on ARM64); `BUN_INSTALL` defaults to `~\.bun`. Set `$Env:BUN_BUILD_CACHE_DIR` to put the build cache somewhere else.
